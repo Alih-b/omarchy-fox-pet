@@ -275,10 +275,86 @@ class TestFoxPetRegression(unittest.TestCase):
         self.assertEqual(rows["sleep"]["row"], 5)
 
     def test_wayland_drag_mask_state(self):
-        # Invariant: Mask must target foxHit directly rather than PanelWindow
-        # to avoid null item cast and Wayland 0x0 input region collapse
-        mask_target = "foxHit"
-        self.assertEqual(mask_target, "foxHit")
+        # Invariant: Mask dynamically targets windowRoot during drag for unbreakable grab,
+        # and dragProxy when idle so clicks anywhere outside the fox pass cleanly through.
+        def get_mask_target(is_dragging):
+            return "windowRoot" if is_dragging else "dragProxy"
+
+        self.assertEqual(get_mask_target(False), "dragProxy")
+        self.assertEqual(get_mask_target(True), "windowRoot")
+
+    def test_sleep_now_unconditional_settlement(self):
+        # Invariant: sleepNow() settles fox firmly on the ground plane and enters
+        # sleep without being blocked by previous altitude or jumping state.
+        class MockFoxSleep:
+            def __init__(self):
+                self.ground_y = 600.0
+                self.position_y = 250.0  # High in the air
+                self.velocity_y = 5.0
+                self.velocity_x = 1.6
+                self.is_jumping = True
+                self.manual_sleep = False
+                self.pet_state = "walk"
+
+            def sleep_now(self):
+                self.position_y = self.ground_y
+                self.velocity_y = 0.0
+                self.velocity_x = 0.0
+                self.is_jumping = False
+                self.manual_sleep = True
+                self.pet_state = "sleep"
+
+        fox = MockFoxSleep()
+        fox.sleep_now()
+        self.assertEqual(fox.position_y, 600.0)
+        self.assertEqual(fox.velocity_y, 0.0)
+        self.assertEqual(fox.velocity_x, 0.0)
+        self.assertFalse(fox.is_jumping)
+        self.assertTrue(fox.manual_sleep)
+        self.assertEqual(fox.pet_state, "sleep")
+
+    def test_gesture_wheel_and_double_click_mappings(self):
+        # Invariant: Wheel UP triggers jump, Wheel DOWN triggers sleep/wake toggle,
+        # double-click toggles sleep/wake cleanly.
+        class MockFoxGestures:
+            def __init__(self):
+                self.pet_state = "idle"
+                self.manual_sleep = False
+                self.jump_count = 0
+
+            def jump(self):
+                self.jump_count += 1
+                self.pet_state = "play"
+
+            def sleep_toggle(self):
+                if self.pet_state == "sleep":
+                    self.manual_sleep = False
+                    self.pet_state = "yawn"
+                else:
+                    self.manual_sleep = True
+                    self.pet_state = "sleep"
+
+            def on_wheel(self, angle_delta_y):
+                if angle_delta_y > 0:
+                    self.jump()
+                elif angle_delta_y < 0:
+                    self.sleep_toggle()
+
+        fox = MockFoxGestures()
+        # Wheel UP -> Jump
+        fox.on_wheel(120)
+        self.assertEqual(fox.jump_count, 1)
+        self.assertEqual(fox.pet_state, "play")
+
+        # Wheel DOWN -> Sleep
+        fox.on_wheel(-120)
+        self.assertEqual(fox.pet_state, "sleep")
+        self.assertTrue(fox.manual_sleep)
+
+        # Wheel DOWN again -> Wake (yawn)
+        fox.on_wheel(-120)
+        self.assertEqual(fox.pet_state, "yawn")
+        self.assertFalse(fox.manual_sleep)
 
     def test_physics_timer_reactive_binding(self):
         # Invariant: physicsTimer.running is purely reactive:

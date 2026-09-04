@@ -149,9 +149,16 @@ Item {
       // this very scene, which is why clicks silently failed before.
       exclusionMode: ExclusionMode.Ignore
       mask: Region {
-        // Confines the Wayland input region to the fox hit area so clicks
-        // anywhere outside the fox pass cleanly through to windows underneath.
-        item: foxHit
+        // Expands to the full window item while dragging to guarantee uninterrupted Wayland
+        // pointer grab at any velocity. In idle mode, tightly tracks dragProxy across the screen
+        // so clicks anywhere outside the fox fall cleanly through to windows underneath.
+        item: (foxHit.drag.active || (root.service && root.service.isDragging)) ? windowRoot : dragProxy
+      }
+
+      // Root item providing a valid QQuickItem covering the full panel frame for dynamic masking
+      Item {
+        id: windowRoot
+        anchors.fill: parent
       }
 
       // Hint banner the first time the user summons the fox. Hides
@@ -176,7 +183,7 @@ Item {
           color: "#f0f0f0"
           font.pixelSize: 12
           font.family: Style.font.family
-          text: "🦊  click = greet · double-click = rest · drag = move"
+          text: "🦊  click = greet · double-click / scroll-down = sleep · scroll-up = jump · drag = move"
         }
 
         Timer {
@@ -285,15 +292,11 @@ Item {
           }
         }
 
-        // Snug click + drag surface. Calibrated to the visible fox body,
-        // using QtQuick native drag.target to guarantee stable pointer capture,
-        // and cleanly discriminating single vs double clicks.
+        // Responsive click + drag surface. Fills dragProxy to make the entire fox body
+        // responsive to mouse gestures (clicks, double-clicks, drags, scroll wheel, and petting).
         MouseArea {
           id: foxHit
-          x: Math.round(parent.width * 0.1)
-          y: Math.round(parent.height * 0.15)
-          width: Math.round(parent.width * 0.8)
-          height: Math.round(parent.height * 0.82)
+          anchors.fill: parent
           cursorShape: root.service && root.service.isDragging
             ? Qt.ClosedHandCursor
             : Qt.PointingHandCursor
@@ -307,10 +310,22 @@ Item {
           drag.minimumY: 0
           drag.maximumY: panel.height - root.scaledCellHeight
 
+          // Gesture state tracking
+          property real lastDragX: 0
+          property real dragVelocityX: 0
+          property real lastStrokeX: 0
+          property int strokeReversals: 0
+          property real lastStrokeTime: 0
+
           drag.onActiveChanged: {
             if (!root.service) return
             root.service.isDragging = drag.active
             if (!drag.active) {
+              // Kinetic toss/fling gesture: impart horizontal momentum on quick release
+              if (Math.abs(dragVelocityX) > 2.5) {
+                root.service.velocityX = Math.max(-10, Math.min(10, dragVelocityX * 0.75))
+                root.service.direction = dragVelocityX > 0 ? 1 : -1
+              }
               // Check if dropped onto another monitor at release time
               var abs = root.service.toAbsolute(dragProxy.x, dragProxy.y)
               var at = root.service.screenAt(abs.x, abs.y)
@@ -326,6 +341,9 @@ Item {
                   - root.scaledCellHeight - root.service.groundMargin
                 : 0
               root.service.settleDrop(g)
+            } else {
+              lastDragX = dragProxy.x
+              dragVelocityX = 0
             }
           }
 
@@ -334,23 +352,70 @@ Item {
           }
 
           onPressed: function(mouse) {
-            if (root.service) {
-              root.service.cancelSleep()
-            }
+            lastDragX = dragProxy.x
+            dragVelocityX = 0
           }
 
           onPositionChanged: function(mouse) {
-            if (!root.service || !root.service.followCursor) return
-            if (root.service.isDragging || root.service.isJumping) return
+            if (!root.service) return
+            // Calculate drag speed for toss gesture
+            if (drag.active) {
+              dragVelocityX = dragProxy.x - lastDragX
+              lastDragX = dragProxy.x
+              return
+            }
+
+            // Petting / stroking gesture detection (rubbing cursor horizontally across the fox)
+            var now = Date.now()
+            if (now - lastStrokeTime > 800) {
+              strokeReversals = 0
+              lastStrokeTime = now
+            }
+            if (lastStrokeX !== 0) {
+              var deltaX = mouse.x - lastStrokeX
+              if (Math.abs(deltaX) > 12) {
+                strokeReversals++
+                lastStrokeTime = now
+                if (strokeReversals >= 4) {
+                  strokeReversals = 0
+                  if (root.service.petState === root.service.stateSleep) {
+                    root.service.poke()
+                  } else {
+                    root.service.startAction(root.service.statePlay, 1400)
+                  }
+                }
+              }
+            }
+            lastStrokeX = mouse.x
+
+            // Precise cursor glance: eliminate redundant property assignments at high polling rates
+            if (!root.service.followCursor || root.service.isJumping) return
             var centerDist = mouse.x - width / 2
             if (Math.abs(centerDist) > 8) {
-              root.service.pointerGlanceDirection = centerDist > 0 ? 1 : -1
-              root.service.pointerNear = true
+              var newDir = centerDist > 0 ? 1 : -1
+              if (root.service.pointerGlanceDirection !== newDir) {
+                root.service.pointerGlanceDirection = newDir
+              }
+              if (!root.service.pointerNear) {
+                root.service.pointerNear = true
+              }
             }
           }
 
           onExited: {
             if (root.service) root.service.pointerNear = false
+            strokeReversals = 0
+            lastStrokeX = 0
+          }
+
+          // Wheel gestures: scroll UP to jump, scroll DOWN to sleep/wake
+          onWheel: function(wheel) {
+            if (!root.service || root.service.isDragging) return
+            if (wheel.angleDelta.y > 0) {
+              root.service.jump()
+            } else if (wheel.angleDelta.y < 0) {
+              root.service.sleepToggle()
+            }
           }
 
           onClicked: function(mouse) {
@@ -366,10 +431,10 @@ Item {
             }
             if (mouse.button !== Qt.LeftButton) return
 
-            // Double-click discrimination: cancels single-click timer so poke is never triggered
+            // Calibrated double-click discrimination: cancels single-click timer and toggles sleep
             if (singleClickTimer.running) {
               singleClickTimer.stop()
-              root.service.sleepNow()
+              root.service.sleepToggle()
             } else {
               singleClickTimer.restart()
             }
@@ -377,7 +442,7 @@ Item {
 
           Timer {
             id: singleClickTimer
-            interval: 220
+            interval: 320
             repeat: false
             onTriggered: {
               if (root.service && !root.service.isDragging) {

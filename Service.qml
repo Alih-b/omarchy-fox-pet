@@ -720,8 +720,12 @@ Item {
   }
 
   function sleepNow() {
-    // Explicit manual sleep: persists until the user pokes or wakes the fox.
-    if (Math.abs(positionY - groundY) > 8) return
+    // Explicit manual sleep: settles firmly on the ground plane and sleeps peacefully.
+    recomputeGround()
+    positionY = groundY
+    velocityY = 0
+    velocityX = 0
+    isJumping = false
     manualSleep = true
     startAction(stateSleep, 0)
     saveDebounce.restart()
