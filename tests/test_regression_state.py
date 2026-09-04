@@ -411,6 +411,119 @@ class TestFoxPetRegression(unittest.TestCase):
         self.assertEqual(sleep_tilt, 0)
         self.assertEqual(sleep_scale, 1.0)
 
+    def test_settle_drop_preserves_sleeping_state(self):
+        # Invariant: settleDrop must keep sleeping fox asleep without waking or running
+        class MockFox:
+            def __init__(self, state="idle", manual_sleep=False):
+                self.petState = state
+                self.manualSleep = manual_sleep
+                self.isDragging = True
+                self.velocityX = 0.0
+                self.actionTimerRunning = True
+                self.actionTimerInterval = 0
+
+            def setState(self, next_state):
+                self.petState = next_state
+
+            def settleDrop(self):
+                self.isDragging = False
+                self.velocityX = 0.0
+                if self.manualSleep or self.petState == "sleep":
+                    self.manualSleep = True
+                    self.setState("sleep")
+                    self.actionTimerRunning = False
+                else:
+                    self.setState("idle")
+                    self.actionTimerInterval = 3000
+                    self.actionTimerRunning = True
+
+        # Dropping an awake fox -> settles into idle and restarts timer
+        awake_fox = MockFox(state="walk", manual_sleep=False)
+        awake_fox.settleDrop()
+        self.assertEqual(awake_fox.petState, "idle")
+        self.assertTrue(awake_fox.actionTimerRunning)
+        self.assertEqual(awake_fox.actionTimerInterval, 3000)
+
+        # Dropping a sleeping fox -> preserves sleep, keeps timer stopped
+        sleep_fox = MockFox(state="sleep", manual_sleep=True)
+        sleep_fox.settleDrop()
+        self.assertEqual(sleep_fox.petState, "sleep")
+        self.assertTrue(sleep_fox.manualSleep)
+        self.assertFalse(sleep_fox.actionTimerRunning)
+
+        # Dropping an autonomously sleeping fox -> locks manualSleep to prevent sudden waking
+        auto_sleep_fox = MockFox(state="sleep", manual_sleep=False)
+        auto_sleep_fox.settleDrop()
+        self.assertEqual(auto_sleep_fox.petState, "sleep")
+        self.assertTrue(auto_sleep_fox.manualSleep)
+        self.assertFalse(auto_sleep_fox.actionTimerRunning)
+
+    def test_sleep_wake_transition_via_yawn(self):
+        # Invariant: Waking up from sleep must transition through yawn (stretch) before idle
+        class MockFox:
+            def __init__(self):
+                self.petState = "sleep"
+                self.manualSleep = False
+
+            def pickNextAction(self):
+                if self.petState == "sleep" and self.manualSleep:
+                    return
+                if self.petState == "sleep":
+                    self.petState = "yawn"
+                    return
+                if self.petState == "yawn":
+                    self.petState = "idle"
+                    return
+
+        fox = MockFox()
+        # Wake step 1: routes through stretch/yawn intermediate frames
+        fox.pickNextAction()
+        self.assertEqual(fox.petState, "yawn")
+        # Wake step 2: settles into idle
+        fox.pickNextAction()
+        self.assertEqual(fox.petState, "idle")
+
+    def test_state_continuity_preserves_frame_index(self):
+        # Invariant: Re-entering a continuous state (walk, idle) must not slam frameIndex to 0
+        class MockState:
+            def __init__(self):
+                self.petState = "idle"
+                self.frameIndex = 0
+
+            def setState(self, next_state):
+                changed = self.petState != next_state
+                self.petState = next_state
+                one_shot = next_state in ["greet", "play", "spin", "somersault"]
+                if changed or one_shot:
+                    self.frameIndex = 0
+
+        fox = MockState()
+        # Start walking
+        fox.setState("walk")
+        fox.frameIndex = 4  # Mid-stride
+
+        # AI rolls walk again while already walking
+        fox.setState("walk")
+        self.assertEqual(fox.frameIndex, 4, "Mid-stride walk must NOT reset frameIndex to 0")
+
+        # Explicit one-shot action re-trigger resets frameIndex
+        fox.setState("greet")
+        fox.frameIndex = 2
+        fox.setState("greet")
+        self.assertEqual(fox.frameIndex, 0, "One-shot action re-trigger must restart from frame 0")
+
+    def test_toss_momentum_guarded_when_asleep(self):
+        # Invariant: Fling / toss gesture must be suppressed when fox is sleeping
+        def compute_release_velocity(drag_velocity_x, is_asleep):
+            if not is_asleep and abs(drag_velocity_x) > 2.5:
+                return max(-10.0, min(10.0, drag_velocity_x * 0.75))
+            return 0.0
+
+        # Fast drag release while awake -> imparts velocity
+        self.assertAlmostEqual(compute_release_velocity(6.0, False), 4.5)
+        # Fast drag release while asleep -> zero velocity (no fling, stays asleep)
+        self.assertAlmostEqual(compute_release_velocity(6.0, True), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

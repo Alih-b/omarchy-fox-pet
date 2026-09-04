@@ -75,7 +75,7 @@ Item {
     "sitLeft":    { row: 2, frames: 8, fps: 4 },
     "greet":      { row: 3, frames: 4, fps: 8 },
     "yawn":       { row: 4, frames: 4, fps: 4 },
-    "sleep":      { row: 5, frames: 8, fps: 3 },
+    "sleep":      { row: 5, frames: 8, fps: 5 },
     "play":       { row: 6, frames: 8, fps: 8 },
     "think":      { row: 7, frames: 8, fps: 5 },
     "alert":      { row: 8, frames: 8, fps: 6 },
@@ -187,7 +187,7 @@ Item {
   // reactions, not as the fox's primary activity.
   function durationFor(action) {
     if (action === stateIdle)     return 4000 + Math.floor(Math.random() * 4500)
-    if (action === stateWalk)     return 3200 + Math.floor(Math.random() * 3500)
+    if (action === stateWalk)     return 3000 + Math.floor(Math.random() * 3) * 1000
     if (action === stateSleep)    return 8000 + Math.floor(Math.random() * 8000)
     if (action === statePlay)     return 1800 + Math.floor(Math.random() * 1500)
     if (action === stateAlert)    return 1200 + Math.floor(Math.random() * 1500)
@@ -320,7 +320,9 @@ Item {
     // actually changes so a re-entry doesn't reset a walk in progress.
     var changed = petState !== next
     petState = next
-    frameIndex = 0
+    if (changed || next === stateGreet || next === statePlay || next === stateSpin || next === stateSomersault) {
+      frameIndex = 0
+    }
     if (!changed) return
     // Each state resets its own motion profile. Walking is the only state
     // that sets a non-zero velocityX; everything else sits still.
@@ -377,8 +379,8 @@ Item {
       return
     }
     if (petState === stateSleep) {
-      // A sleeping fox wakes into idle, not into a high-energy state.
-      startAction(stateIdle, durationFor(stateIdle))
+      // A sleeping fox stretches and yawns before standing into idle
+      startAction(stateYawn, durationFor(stateYawn))
       saveDebounce.restart()
       return
     }
@@ -473,9 +475,15 @@ Item {
       // Released in mid-air: initial fall velocity is zero for a gentle descent
       velocityY = 0
     }
-    setState(stateIdle)
-    actionTimer.interval = 2500
-    actionTimer.restart()
+    if (manualSleep || petState === stateSleep) {
+      manualSleep = true
+      setState(stateSleep)
+      actionTimer.stop()
+    } else {
+      setState(stateIdle)
+      actionTimer.interval = 3000
+      actionTimer.restart()
+    }
     saveDebounce.restart()
   }
 

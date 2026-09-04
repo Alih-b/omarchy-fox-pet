@@ -281,7 +281,7 @@ Item {
               source: root.spriteUrl
               fillMode: Image.Stretch
               smooth: true
-              mipmap: true
+              mipmap: false
               asynchronous: false
               cache: true
               mirror: root.facingScale === -1
@@ -321,8 +321,9 @@ Item {
             if (!root.service) return
             root.service.isDragging = drag.active
             if (!drag.active) {
-              // Kinetic toss/fling gesture: impart horizontal momentum on quick release
-              if (Math.abs(dragVelocityX) > 2.5) {
+              // Kinetic toss/fling gesture: impart horizontal momentum on quick release (awake only)
+              var isAsleep = root.service.manualSleep || root.service.petState === root.service.stateSleep
+              if (!isAsleep && Math.abs(dragVelocityX) > 2.5) {
                 root.service.velocityX = Math.max(-10, Math.min(10, dragVelocityX * 0.75))
                 root.service.direction = dragVelocityX > 0 ? 1 : -1
               }
