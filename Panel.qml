@@ -96,12 +96,10 @@ Item {
   // `scale: -1` doesn't accidentally flip the fox upside-down.
   readonly property real facingScale: service && service.direction === -1 ? -1 : 1
 
-  // The spritesheet has no dedicated sleep pose; row 5 reads as a
-  // drowsy/scared look. We apply a tilt + slight shrink when the fox
-  // is sleeping to make it read as "curled up" rather than "startled".
+  // Dedicated curled-up sleep sprite in row 5 requires no synthetic tilt or shrink.
   readonly property bool isSleeping: service && service.petState === service.stateSleep
-  readonly property real sleepTilt: isSleeping ? 12 : 0
-  readonly property real sleepScale: isSleeping ? 0.85 : 1.0
+  readonly property real sleepTilt: 0
+  readonly property real sleepScale: 1.0
 
   // Per-panel: does the fox actually live on this screen? The service
   // tracks its own currentScreenIndex and exposes a helper that compares
@@ -151,7 +149,11 @@ Item {
       // this very scene, which is why clicks silently failed before.
       exclusionMode: ExclusionMode.Ignore
       mask: Region {
-        item: foxHit
+        // While pressed or actively dragging, the input region expands to the
+        // entire screen panel so high-speed dragging never loses pointer capture
+        // across Wayland surface boundaries. When released, it contracts snugly
+        // to foxHit so clicks anywhere outside the fox pass cleanly through.
+        item: (foxHit.pressed || (root.service && root.service.isDragging)) ? panel : foxHit
       }
 
       // Hint banner the first time the user summons the fox. Hides
@@ -241,11 +243,9 @@ Item {
         Item {
           id: flipper
           anchors.fill: parent
-          // Sleep pose anchored to Item.Bottom keeps the resting fox
-          // grounded on the floor without penetrating or hovering.
           transformOrigin: Item.Bottom
-          rotation: root.isSleeping ? 12 : 0
-          scale: root.isSleeping ? 0.85 : 1.0
+          rotation: root.sleepTilt
+          scale: root.sleepScale
 
           Image {
             id: sprite
@@ -320,7 +320,6 @@ Item {
           grabOffsetX = pt.x - root.serviceX
           grabOffsetY = pt.y - root.serviceY
           if (root.service) {
-            root.service.isDragging = true
             root.service.cancelSleep()
           }
         }
@@ -330,39 +329,46 @@ Item {
           if (!dragMoved) {
             if (Math.abs(mouse.x - pressMouseX) > 4 || Math.abs(mouse.y - pressMouseY) > 4) {
               dragMoved = true
+              root.service.isDragging = true
             }
           }
+          if (!dragMoved) return
+
           var pt = foxHit.mapToItem(panel, mouse.x, mouse.y)
           var targetLocalX = pt.x - grabOffsetX
           var targetLocalY = pt.y - grabOffsetY
 
-          // Seamless multi-monitor dragging
-          var abs = root.service.toAbsolute(targetLocalX, targetLocalY)
-          var at = root.service.screenAt(abs.x, abs.y)
-          if (at && at.index !== root.service.currentScreenIndex) {
-            root.service.currentScreenIndex = at.index
-            var local = root.service.toLocal(abs.x, abs.y, at.index)
-            root.service.positionX = local.x
-            root.service.positionY = local.y
-            root.service.recomputeGround()
-          } else {
-            root.service.positionX = targetLocalX
-            root.service.positionY = targetLocalY
-          }
+          // Update position without switching currentScreenIndex during drag,
+          // which would destroy/hide this panel window mid-drag and drop the Wayland grab.
+          root.service.positionX = targetLocalX
+          root.service.positionY = targetLocalY
         }
 
         onReleased: function(mouse) {
+          var wasPressed = pressed
           pressed = false
           hint.dismissed = true
           if (!root.service) return
           var wasDrag = dragMoved
           dragMoved = false
           if (wasDrag) {
+            // Check if dropped onto another monitor at release time
+            var abs = root.service.toAbsolute(root.service.positionX, root.service.positionY)
+            var at = root.service.screenAt(abs.x, abs.y)
+            if (at && at.index !== root.service.currentScreenIndex) {
+              root.service.currentScreenIndex = at.index
+              var local = root.service.toLocal(abs.x, abs.y, at.index)
+              root.service.positionX = local.x
+              root.service.positionY = local.y
+              root.service.recomputeGround()
+            }
             var g = root.service.currentScreen()
               ? root.service.screenGeometry(root.service.currentScreen()).height
                 - root.scaledCellHeight - root.service.groundMargin
               : 0
             root.service.settleDrop(g)
+          } else if (root.service.isDragging) {
+            root.service.isDragging = false
           }
         }
 

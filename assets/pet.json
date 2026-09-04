@@ -3,7 +3,7 @@
   "displayName": "Folio",
   "description": "A calm, curious ink-blue maker fox who turns rough ideas into clear, polished artifacts.",
   "spritesheetPath": "spritesheet.webp",
-  "spriteVersionNumber": 2,
+  "spriteVersionNumber": 3,
   "kind": "animal",
   "sprite": {
     "columns": 8,
@@ -18,8 +18,10 @@
       "yawn":       { "row": 4, "frames": 4, "fps": 4 },
       "sleep":      { "row": 5, "frames": 8, "fps": 3 },
       "play":       { "row": 6, "frames": 8, "fps": 8 },
+      "think":      { "row": 7, "frames": 8, "fps": 5 },
       "alert":      { "row": 8, "frames": 8, "fps": 6 },
-      "walk":       { "row": 9, "frames": 8, "fps": 10 },
+      "walk":       { "row": 1, "frames": 8, "fps": 8 },
+      "spin":       { "row": 9, "frames": 8, "fps": 10 },
       "somersault": { "row": 10, "frames": 8, "fps": 5 }
     }
   }

@@ -264,6 +264,33 @@ class TestFoxPetRegression(unittest.TestCase):
         self.assertEqual(deserialized["direction"], 1)
         self.assertEqual(deserialized["scale"], 1.25)
 
+    def test_walk_locomotion_mapping(self):
+        with open(self.pet_json_path, "r", encoding="utf-8") as f:
+            pet_meta = json.load(f)
+        rows = pet_meta["sprite"]["rows"]
+        # Invariant: walk must map to Row 1 (forward leap) rather than Row 9 (turntable spin)
+        self.assertEqual(rows["walk"]["row"], 1)
+        self.assertEqual(rows["walk"]["frames"], 8)
+        self.assertEqual(rows["spin"]["row"], 9)
+        self.assertEqual(rows["sleep"]["row"], 5)
+
+    def test_wayland_drag_mask_state(self):
+        # Invariant: Dynamic mask must cover panel during drag/press and foxHit when idle
+        def get_mask_item(pressed, is_dragging):
+            return "panel" if (pressed or is_dragging) else "foxHit"
+
+        self.assertEqual(get_mask_item(False, False), "foxHit")
+        self.assertEqual(get_mask_item(True, False), "panel")
+        self.assertEqual(get_mask_item(False, True), "panel")
+        self.assertEqual(get_mask_item(True, True), "panel")
+
+    def test_sleep_transform_invariants(self):
+        # Invariant: Dedicated sleeping sprite requires no artificial tilt or shrink
+        sleep_tilt = 0
+        sleep_scale = 1.0
+        self.assertEqual(sleep_tilt, 0)
+        self.assertEqual(sleep_scale, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

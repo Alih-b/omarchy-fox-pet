@@ -56,6 +56,8 @@ Item {
   readonly property string statePlay:      "play"
   readonly property string stateAlert:     "alert"
   readonly property string stateYawn:      "yawn"
+  readonly property string stateThink:      "think"
+  readonly property string stateSpin:       "spin"
   // Row 10 of the spritesheet is a headstand / somersault pose. It's a
   // rare delight, not a default AI target — it can only be triggered
   // explicitly via the somersault() API.
@@ -67,15 +69,18 @@ Item {
   // below. Some states (greet, yawn) only have a few useful frames before
   // the motion repeats; the others have 8 and loop continuously.
   readonly property var defaultRows: ({
-    "idle":     { row: 0, frames: 8, fps: 5 },
-    "sitRight": { row: 1, frames: 8, fps: 4 },
-    "sitLeft":  { row: 2, frames: 8, fps: 4 },
-    "greet":    { row: 3, frames: 4, fps: 8 },
-    "yawn":     { row: 4, frames: 4, fps: 4 },
-    "sleep":    { row: 5, frames: 8, fps: 3 },
-    "play":     { row: 6, frames: 8, fps: 8 },
-    "alert":    { row: 8, frames: 8, fps: 6 },
-    "walk":     { row: 9, frames: 8, fps: 10 }
+    "idle":       { row: 0, frames: 8, fps: 5 },
+    "walk":       { row: 1, frames: 8, fps: 8 },
+    "sitRight":   { row: 1, frames: 8, fps: 4 },
+    "sitLeft":    { row: 2, frames: 8, fps: 4 },
+    "greet":      { row: 3, frames: 4, fps: 8 },
+    "yawn":       { row: 4, frames: 4, fps: 4 },
+    "sleep":      { row: 5, frames: 8, fps: 3 },
+    "play":       { row: 6, frames: 8, fps: 8 },
+    "think":      { row: 7, frames: 8, fps: 5 },
+    "alert":      { row: 8, frames: 8, fps: 6 },
+    "spin":       { row: 9, frames: 8, fps: 10 },
+    "somersault": { row: 10, frames: 8, fps: 5 }
   })
 
   property var rows: defaultRows
@@ -191,6 +196,8 @@ Item {
     if (action === stateSitRight) return 4000 + Math.floor(Math.random() * 4000)
     if (action === stateSitLeft)  return 4000 + Math.floor(Math.random() * 4000)
     if (action === stateSomersault) return 1600
+    if (action === stateSpin) return 1200
+    if (action === stateThink) return 2200
     return 2000
   }
 
@@ -332,7 +339,7 @@ Item {
     // frames are drawn right-facing). For other poses, facing tracks
     // the last direction the fox was moving so it doesn't snap.
     if (next === stateGreet || next === statePlay || next === stateSleep
-        || next === stateYawn || next === stateSomersault) direction = 1
+        || next === stateYawn || next === stateSomersault || next === stateSpin || next === stateThink) direction = 1
   }
 
   function startAction(action, ms) {
@@ -423,6 +430,12 @@ Item {
   function somersault() {
     if (isJumping) return
     startAction(stateSomersault, durationFor(stateSomersault))
+  }
+
+  // Manually triggered spin — the row-9 360-degree turntable rotation.
+  function spin() {
+    if (isJumping) return
+    startAction(stateSpin, durationFor(stateSpin))
   }
 
   function jump() {
@@ -943,6 +956,7 @@ Item {
     function reset(): string { service.resetPosition(); return "ok" }
     function jump(): string { service.jump(); return "ok" }
     function somersault(): string { service.somersault(); return "ok" }
+    function spin(): string { service.spin(); return "ok" }
     function position(): string {
       return Math.round(service.positionX) + "," + Math.round(service.positionY)
     }
