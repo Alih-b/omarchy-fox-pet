@@ -42,9 +42,8 @@ Item {
 
   function open(payloadJson) {
     opened = true
-    if (service) {
-      service.resetPosition()
-      if (!service.enabled) service.enable()
+    if (service && !service.enabled) {
+      service.enable()
     }
   }
 
@@ -71,9 +70,13 @@ Item {
   readonly property int columns: service ? service.columns : 8
   readonly property int cellWidth: service ? service.cellWidth : 192
   readonly property int cellHeight: service ? service.cellHeight : 208
+  readonly property int rowCount: service ? service.rowCount : 11
 
   readonly property int scaledCellWidth: Math.round(cellWidth * scale)
   readonly property int scaledCellHeight: Math.round(cellHeight * scale)
+
+  readonly property real altitude: service ? Math.max(0, service.groundY - serviceY) : 0
+  readonly property real shadowFade: Math.max(0.3, 1.0 - altitude / 450.0)
 
   readonly property var rowSpec: service && service.rows
     ? service.rows[service.petState] || service.rows[service.stateIdle]
@@ -147,13 +150,16 @@ Item {
       // here — an empty Region would also block the MouseArea inside
       // this very scene, which is why clicks silently failed before.
       exclusionMode: ExclusionMode.Ignore
+      mask: Region {
+        item: foxHit
+      }
 
       // Hint banner the first time the user summons the fox. Hides
       // itself after a few seconds or as soon as the user interacts.
       Rectangle {
         id: hint
-        visible: hintTimer.running && !hint.dismissed
-        opacity: visible ? 1.0 : 0.0
+        visible: opacity > 0.0
+        opacity: hintTimer.running && !hint.dismissed ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
         width: hintText.implicitWidth + 24
         height: hintText.implicitHeight + 16
@@ -161,8 +167,8 @@ Item {
         color: Qt.rgba(0.12, 0.12, 0.12, 0.85)
         border.color: Qt.rgba(1, 1, 1, 0.18)
         border.width: 1
-        x: Math.max(20, Math.min(panel.width - width - 20, root.serviceX + root.scaledCellWidth / 2 - width / 2))
-        y: Math.max(20, root.serviceY - height - 12)
+        x: Math.max(20, Math.min(panel.width - width - 20, Math.round(root.serviceX + root.scaledCellWidth / 2 - width / 2)))
+        y: Math.max(20, Math.round(root.serviceY - height - 12))
 
         Text {
           id: hintText
@@ -177,61 +183,57 @@ Item {
           id: hintTimer
           interval: 5000
           running: root.opened && !hint.dismissed
-          onTriggered: hint.visible = false
+          onTriggered: hint.dismissed = true
         }
         property bool dismissed: false
       }
 
-      // Drop shadow. A stepped opacity stack makes a believable radial
-      // falloff without paying for a RadialGradient's per-frame setup.
-      // Four concentric ellipses, each fainter than the one inside it.
+      // Drop shadow. Pinned to the ground plane, softly scaling and fading
+      // with the fox's altitude so it stays realistically on the floor.
       Item {
         id: shadow
         visible: root.service && root.service.showShadow
-        x: root.serviceX + Math.round(root.scaledCellWidth / 2 - width / 2)
-        y: root.serviceY + root.scaledCellHeight - Math.round(10 * root.scale)
-        width: Math.round(root.scaledCellWidth * 0.7)
-        height: Math.round(18 * root.scale)
+        opacity: root.isSleeping ? 0.8 : root.shadowFade
+        x: Math.round(root.serviceX + (root.scaledCellWidth - width) / 2)
+        y: root.service
+          ? Math.round(root.service.groundY + root.scaledCellHeight - 12 * root.scale)
+          : Math.round(root.serviceY + root.scaledCellHeight - 12 * root.scale)
+        width: Math.round(root.scaledCellWidth * (0.65 + Math.min(0.2, root.altitude / 600.0)))
+        height: Math.round(18 * root.scale * (1.0 + Math.min(0.3, root.altitude / 500.0)))
 
         Item {
           anchors.fill: parent
-          clip: true
 
           Rectangle {
             anchors.centerIn: parent
             width: parent.width * 0.40
             height: parent.height * 0.55
-            radius: width / 2
+            radius: height / 2
             color: Qt.rgba(0, 0, 0, 0.45)
           }
           Rectangle {
             anchors.centerIn: parent
             width: parent.width * 0.60
             height: parent.height * 0.80
-            radius: width / 2
+            radius: height / 2
             color: Qt.rgba(0, 0, 0, 0.20)
           }
           Rectangle {
             anchors.centerIn: parent
             width: parent.width * 0.80
             height: parent.height * 0.95
-            radius: width / 2
+            radius: height / 2
             color: Qt.rgba(0, 0, 0, 0.08)
           }
         }
       }
 
-      // Fox sprite. Outer Item is the position / hit box. The flipper
-      // is a thin wrapper inside that handles the horizontal mirror
-      // AND the sleep-pose tilt + shrink. Using a transform list (not
-      // the `scale` property) lets us flip only the X axis — using
-      // `scale: -1` here was the bug that flipped the fox upside-down,
-      // because Qt's `scale` property is a vector3d that defaults Y to
-      // -1 when X is -1.
+      // Fox sprite. Pixel-rounded integer coordinates prevent bilinear
+      // texture blur and shimmering while walking.
       Item {
         id: fox
-        x: root.serviceX
-        y: root.serviceY
+        x: Math.round(root.serviceX)
+        y: Math.round(root.serviceY)
         width: root.scaledCellWidth
         height: root.scaledCellHeight
         clip: true
@@ -239,10 +241,9 @@ Item {
         Item {
           id: flipper
           anchors.fill: parent
-          // Sleep pose: tilt + shrink applied as Item properties with
-          // transformOrigin at the center. Both compose without the
-          // per-element origin drama of a transform list.
-          transformOrigin: Item.Center
+          // Sleep pose anchored to Item.Bottom keeps the resting fox
+          // grounded on the floor without penetrating or hovering.
+          transformOrigin: Item.Bottom
           rotation: root.isSleeping ? 12 : 0
           scale: root.isSleeping ? 0.85 : 1.0
 
@@ -253,14 +254,8 @@ Item {
             fillMode: Image.Stretch
             smooth: true
             mipmap: true
-            asynchronous: true
+            asynchronous: false
             cache: true
-            // Qt's Image.mirror flips the rendered pixels horizontally
-            // without touching the bounding box, the hit area, or the
-            // transform pipeline. Using it instead of a Matrix4x4 +
-            // Scale combo keeps the renderer on a single fast path and
-            // removes the brief-blank frames we saw when the
-            // transform list re-evaluated mid-layout.
             mirror: root.facingScale === -1
             sourceClipRect: Qt.rect(root.frameX, root.frameY, root.cellWidth, root.cellHeight)
             sourceSize: Qt.size(root.cellWidth * root.columns,
@@ -269,104 +264,111 @@ Item {
         }
       }
 
-      // Click + drag surface. Anchored to the fox bounding box so the
-      // hit area follows the sprite's position. The MouseArea captures
-      // all events within its rect; clicks outside it fall through to
-      // whatever's underneath because exclusionMode is Ignore and we
-      // do NOT mask the whole surface.
-      //
-      // The MouseArea is INSIDE the flipper. When the flipper's
-      // transform mirrors the sprite horizontally, the MouseArea's
-      // bounding box is NOT mirrored — only the rendered sprite is.
-      // That keeps `mouse.x` and the drag math in screen-local
-      // coordinates regardless of which way the fox faces, which is
-      // what the user expects (drag right → fox follows right).
+      // Proximity hover area: detects cursor direction to glance naturally
+      // without capturing or blocking any mouse clicks.
+      MouseArea {
+        id: proximityArea
+        x: Math.round(fox.x - (width - fox.width) / 2)
+        y: Math.round(fox.y - (height - fox.height) / 2)
+        width: Math.round(root.scaledCellWidth * 1.8)
+        height: Math.round(root.scaledCellHeight * 1.4)
+        hoverEnabled: true
+        acceptedButtons: Qt.NoButton
+
+        onPositionChanged: function(mouse) {
+          if (!root.service || !root.service.followCursor) return
+          if (root.service.isDragging || root.service.isJumping) return
+          var centerDist = mouse.x - width / 2
+          if (Math.abs(centerDist) > 8) {
+            root.service.pointerGlanceDirection = centerDist > 0 ? 1 : -1
+            root.service.pointerNear = true
+          }
+        }
+        onExited: {
+          if (root.service) root.service.pointerNear = false
+        }
+      }
+
+      // Snug click + drag surface. Calibrated to the visible fox body,
+      // eliminating cursor jitter via parent-mapped coordinates, supporting
+      // cross-monitor drag, and cleanly discriminating single vs double clicks.
       MouseArea {
         id: foxHit
-        x: fox.x
-        y: fox.y
-        width: fox.width
-        height: fox.height
+        x: Math.round(fox.x + fox.width * 0.1)
+        y: Math.round(fox.y + fox.height * 0.15)
+        width: Math.round(fox.width * 0.8)
+        height: Math.round(fox.height * 0.82)
         cursorShape: root.service && root.service.isDragging
           ? Qt.ClosedHandCursor
           : Qt.PointingHandCursor
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
 
-        property real lastX: 0
-        property real lastY: 0
+        property real grabOffsetX: 0
+        property real grabOffsetY: 0
+        property real pressMouseX: 0
+        property real pressMouseY: 0
+        property bool dragMoved: false
         property bool pressed: false
-
-        onEntered: {
-          if (root.service && root.service.followCursor) root.service.pointerNear = true
-        }
-        onExited: {
-          if (root.service) root.service.pointerNear = false
-        }
 
         onPressed: function(mouse) {
           pressed = true
-          lastX = mouse.x
-          lastY = mouse.y
+          dragMoved = false
+          pressMouseX = mouse.x
+          pressMouseY = mouse.y
+          var pt = foxHit.mapToItem(panel, mouse.x, mouse.y)
+          grabOffsetX = pt.x - root.serviceX
+          grabOffsetY = pt.y - root.serviceY
           if (root.service) {
             root.service.isDragging = true
-            // Treat the press itself as the first tick of the click
-            // handler so a press-then-release with no movement still
-            // counts as a click on the same screen pixel.
             root.service.cancelSleep()
           }
         }
 
         onPositionChanged: function(mouse) {
           if (!pressed || !root.service) return
-          // Raw screen-local deltas. The MouseArea is un-flipped even
-          // when the visual sprite is, so multiplying by facingScale
-          // here would invert the drag direction — which is what the
-          // previous code did, hence the "fox runs away from the
-          // cursor when facing left" bug.
-          var dx = mouse.x - lastX
-          var dy = mouse.y - lastY
-          lastX = mouse.x
-          lastY = mouse.y
-          root.service.positionX += dx
-          root.service.positionY += dy
-          // Clamp inside this screen's local bounds. The service's
-          // physics timer clamps again on the next tick; this is the
-          // immediate-response clamp so a fast drag doesn't fling the
-          // fox off-screen.
-          var scaledW = root.scaledCellWidth
-          var scaledH = root.scaledCellHeight
-          if (root.service.positionX < 0) root.service.positionX = 0
-          if (root.service.positionX > panel.width - scaledW)
-            root.service.positionX = Math.max(0, panel.width - scaledW)
-          if (root.service.positionY < 0) root.service.positionY = 0
-          if (root.service.positionY > panel.height - scaledH)
-            root.service.positionY = Math.max(0, panel.height - scaledH)
+          if (!dragMoved) {
+            if (Math.abs(mouse.x - pressMouseX) > 4 || Math.abs(mouse.y - pressMouseY) > 4) {
+              dragMoved = true
+            }
+          }
+          var pt = foxHit.mapToItem(panel, mouse.x, mouse.y)
+          var targetLocalX = pt.x - grabOffsetX
+          var targetLocalY = pt.y - grabOffsetY
+
+          // Seamless multi-monitor dragging
+          var abs = root.service.toAbsolute(targetLocalX, targetLocalY)
+          var at = root.service.screenAt(abs.x, abs.y)
+          if (at && at.index !== root.service.currentScreenIndex) {
+            root.service.currentScreenIndex = at.index
+            var local = root.service.toLocal(abs.x, abs.y, at.index)
+            root.service.positionX = local.x
+            root.service.positionY = local.y
+            root.service.recomputeGround()
+          } else {
+            root.service.positionX = targetLocalX
+            root.service.positionY = targetLocalY
+          }
         }
 
-        onReleased: {
+        onReleased: function(mouse) {
           pressed = false
           hint.dismissed = true
           if (!root.service) return
-          // The "bouncing ball" behavior came from clearing isDragging
-          // and leaving physics to take over mid-air. The user wants
-          // the fox to land where they dropped it. If the release
-          // point is above the ground, we ask the service to land it
-          // softly (settling on the ground line instead of falling
-          // and rebounding); if it's already on the ground line, the
-          // settle is a no-op.
-          var g = root.service.currentScreen
-            ? root.service.screenGeometry(root.service.currentScreen()).height
-              - root.scaledCellHeight - root.service.groundMargin
-            : 0
-          root.service.settleDrop(g)
+          var wasDrag = dragMoved
+          dragMoved = false
+          if (wasDrag) {
+            var g = root.service.currentScreen()
+              ? root.service.screenGeometry(root.service.currentScreen()).height
+                - root.scaledCellHeight - root.service.groundMargin
+              : 0
+            root.service.settleDrop(g)
+          }
         }
 
         onClicked: function(mouse) {
           hint.dismissed = true
-          if (!root.service) return
-          // Right click resets position; middle click toggles sleep.
-          // Left click is the greet/double-click-sleep chain.
+          if (dragMoved || !root.service) return
           if (mouse.button === Qt.RightButton) {
             root.service.resetPosition()
             return
@@ -376,31 +378,29 @@ Item {
             return
           }
           if (mouse.button !== Qt.LeftButton) return
-          if (doubleClickTimer.running) {
-            doubleClickTimer.stop()
+
+          // Double-click discrimination: cancels single-click timer so poke is never triggered
+          if (singleClickTimer.running) {
+            singleClickTimer.stop()
             root.service.sleepNow()
           } else {
-            doubleClickTimer.interval = 250
-            doubleClickTimer.restart()
-            root.service.poke()
+            singleClickTimer.restart()
           }
         }
 
         Timer {
-          id: doubleClickTimer
-          interval: 250
+          id: singleClickTimer
+          interval: 220
           repeat: false
+          onTriggered: {
+            if (root.service && !root.service.isDragging) {
+              root.service.poke()
+            }
+          }
         }
       }
     }
   }
 
-  // IPC for the panel itself lives on the Service (target: "fox-pet"),
-  // because the service is always loaded when the plugin is enabled and
-  // it can decide whether to show the panel itself. Duplicating the
-  // target here would make Quickshell drop one of the registrations.
+  // IPC for the panel itself lives on the Service (target: "fox-pet").
 }
-
-// reload
-
-// reload 2

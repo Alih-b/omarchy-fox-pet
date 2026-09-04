@@ -116,7 +116,7 @@ Item {
   // Tunable knobs. Reasonable defaults — the AI isn't aggressive and the
   // physics is gentle so it reads as a calm companion, not a pinball.
   readonly property real gravity: 0.45
-  readonly property real bounce: 0.55
+  readonly property real bounce: 0.30
   readonly property real walkSpeed: 1.6
   readonly property real jumpImpulse: -10.5
   // A small grace period at the edge of a screen so the fox doesn't reverse
@@ -132,6 +132,8 @@ Item {
   // the fox glances toward the cursor briefly instead of freezing.
   property bool pointerNear: false
   property int pointerGlanceAt: 0
+  property int pointerGlanceDirection: 1
+  property bool manualSleep: false
 
   // The AI lives on a rolling timer that decides the fox's next mood a few
   // seconds into the future. The chosen action then runs on its own timers
@@ -317,8 +319,12 @@ Item {
     // that sets a non-zero velocityX; everything else sits still.
     if (next === stateWalk) {
       // Pick a direction unless the fox was already heading somewhere.
-      if (velocityX === 0) velocityX = walkSpeed * (Math.random() > 0.5 ? 1 : -1)
-      direction = velocityX >= 0 ? 1 : -1
+      if (velocityX === 0) {
+        direction = (direction === 1 || direction === -1) ? direction : (Math.random() > 0.5 ? 1 : -1)
+        velocityX = walkSpeed * direction
+      } else {
+        direction = velocityX >= 0 ? 1 : -1
+      }
     } else {
       velocityX = 0
     }
@@ -333,15 +339,22 @@ Item {
     pendingAction = action
     pendingDurationMs = ms
     setState(action)
-    actionTimer.interval = ms
-    actionTimer.restart()
-    // Restart the frame anim timer so the first frame of the new pose
-    // shows for the full duration, instead of arriving late because the
-    // timer happened to be partway through its previous interval.
+    if (ms > 0) {
+      actionTimer.interval = ms
+      actionTimer.restart()
+    } else {
+      actionTimer.stop()
+    }
+    // Restart the frame anim timer at the cadence for this pose so the
+    // first frame shows for the full duration.
+    animTimer.interval = animTimer.cadenceFor()
     animTimer.restart()
   }
 
   function pickNextAction() {
+    // If manual sleep is active, stay asleep until user interacts.
+    if (petState === stateSleep && manualSleep) return
+
     // Greet chains used to re-roll themselves indefinitely; the counter
     // caps each cycle at one greet, then the fox settles into idle until
     // the next roll.
@@ -352,12 +365,13 @@ Item {
         return
       }
       startAction(stateIdle, durationFor(stateIdle))
+      saveDebounce.restart()
       return
     }
     if (petState === stateSleep) {
-      // A sleeping fox wakes into idle, not into a high-energy state. The
-      // AI will roll again from there.
+      // A sleeping fox wakes into idle, not into a high-energy state.
       startAction(stateIdle, durationFor(stateIdle))
+      saveDebounce.restart()
       return
     }
     // After any other emote (sit, play, alert, yawn) or after a long
@@ -366,6 +380,7 @@ Item {
     var isHome = petState === stateIdle || petState === stateWalk
     if (!isHome) {
       startAction(stateIdle, durationFor(stateIdle))
+      saveDebounce.restart()
       return
     }
     // From a home state, bias toward walking so the fox actually
@@ -422,29 +437,32 @@ Item {
     pendingAction = stateIdle
   }
 
-  // Called by the panel when the user releases a drag. We want the fox
-  // to land where the user dropped it, not bounce like a ball. If the
-  // release point is above the ground line, snap it down and clear the
-  // velocity so physics doesn't immediately pull it back up.
+  // Called by the panel when the user releases a drag. If dropped mid-air,
+  // the fox falls gently to the floor with a cushioned landing.
   function settleDrop(groundYHint) {
     if (!enabled) return
     isDragging = false
     isJumping = false
-    velocityY = 0
     velocityX = 0
-    // Resolve the ground line for the current screen. Caller can pass
-    // the value it already computed from the panel; otherwise we look
-    // it up here.
     var ground = groundYHint
     if (typeof ground !== "number" || !isFinite(ground)) {
       var g = screenGeometry(currentScreen())
       ground = Math.round(g.height - cellHeight * scale - groundMargin)
     }
-    if (positionY > ground) positionY = ground
-    else if (positionY < 0) positionY = 0
-    // Resume physics at the new resting position. The next tick will
-    // see positionY == ground and not apply gravity, so the fox stays
-    // put until the AI rolls a walk or the user clicks.
+    if (positionY > ground) {
+      positionY = ground
+      velocityY = 0
+    } else if (positionY < 0) {
+      positionY = 0
+      velocityY = 0
+    } else {
+      // Released in mid-air: initial fall velocity is zero for a gentle descent
+      velocityY = 0
+    }
+    setState(stateIdle)
+    actionTimer.interval = 2500
+    actionTimer.restart()
+    saveDebounce.restart()
   }
 
   function resetPosition() {
@@ -492,6 +510,9 @@ Item {
     repeat: false
     onTriggered: {
       service.pointerNear = false
+      if (service.petState === service.stateWalk) {
+        service.direction = service.velocityX >= 0 ? 1 : -1
+      }
     }
   }
 
@@ -551,16 +572,12 @@ Item {
       var scaledWidth = service.cellWidth * service.scale
       if (service.positionX <= service.edgeMargin) {
         service.positionX = service.edgeMargin
-        if (service.velocityX < 0) {
-          service.velocityX = -service.velocityX * 0.95
-          service.direction = 1
-        }
+        service.direction = 1
+        service.velocityX = service.walkSpeed
       } else if (service.positionX >= g.width - scaledWidth - service.edgeMargin) {
         service.positionX = Math.max(service.edgeMargin, g.width - scaledWidth - service.edgeMargin)
-        if (service.velocityX > 0) {
-          service.velocityX = -service.velocityX * 0.95
-          service.direction = -1
-        }
+        service.direction = -1
+        service.velocityX = -service.walkSpeed
       }
 
       // Keep velocityY sane; very tall screens shouldn't accumulate.
@@ -573,22 +590,19 @@ Item {
     }
   }
 
-  // React to the cursor being near the fox. The Panel.qml flips
-  // pointerNear as the mouse enters / leaves the hit area; this handler
-  // glances toward the cursor briefly if followCursor is on.
+  // React to the cursor being near the fox.
+  // Glances toward the cursor briefly if followCursor is on.
   onPointerNearChanged: {
     if (!pointerNear || !followCursor || !enabled) return
-    if (isJumping) return
-    var cursor = cursorAbsolute()
-    if (!cursor) return
-    var absolute = toAbsolute(positionX, positionY)
-    if (Math.abs(cursor.x - absolute.x) < 8 && Math.abs(cursor.y - absolute.y) < 8) {
-      // The cursor is on the fox — no need to glance.
-      return
+    if (isJumping || isDragging) return
+    // Only glance in stationary poses so the fox never turns opposite its walk velocity
+    if (petState === stateIdle || petState === stateSitRight || petState === stateSitLeft) {
+      if (pointerGlanceDirection === 1 || pointerGlanceDirection === -1) {
+        direction = pointerGlanceDirection
+      }
+      pointerGlanceAt = Date.now()
+      pointerGlanceTimer.restart()
     }
-    direction = cursor.x >= absolute.x ? 1 : -1
-    pointerGlanceAt = Date.now()
-    pointerGlanceTimer.restart()
   }
 
   // Recompute ground on every change of scale or screen set. The same
@@ -665,6 +679,7 @@ Item {
   }
 
   function poke() {
+    manualSleep = false
     // User clicked the fox. The fox acknowledges with a greet pose —
     // unless it's airborne (where a small extra hop is friendlier than
     // interrupting the jump), or asleep (where a yawn fits better
@@ -687,22 +702,17 @@ Item {
     startAction(stateGreet, 1200)
   }
 
-  // Called by the panel's MouseArea on press. If the user is just
-  // clicking the fox (rather than dragging), this cancels any pending
-  // sleep so the click counts as a fresh interaction instead of
-  // blending into the previous animation.
+  // Called by the panel's MouseArea on press.
   function cancelSleep() {
-    // No-op when nothing to cancel. Used to mark "the user is poking
-    // at me right now" without forcing a state change.
+    if (manualSleep) manualSleep = false
   }
 
   function sleepNow() {
-    // Used by double-click. The fox only sleeps if it's on the ground.
-    // If the fox is in mid-air when the second click arrives, ignore
-    // the double-click rather than chaining into another jump — the
-    // user's intent was clearly "go to sleep", not "jump again".
-    if (Math.abs(positionY - groundY) > 4) return
-    startAction(stateSleep, durationFor(stateSleep) + 2000)
+    // Explicit manual sleep: persists until the user pokes or wakes the fox.
+    if (Math.abs(positionY - groundY) > 8) return
+    manualSleep = true
+    startAction(stateSleep, 0)
+    saveDebounce.restart()
   }
 
   // Toggle between sleeping and waking. Used by the bar widget's
@@ -710,7 +720,7 @@ Item {
   function sleepToggle() {
     if (!enabled) return
     if (petState === stateSleep) {
-      // Friendlier wake than a forced state change.
+      manualSleep = false
       poke()
     } else {
       sleepNow()
@@ -791,8 +801,8 @@ Item {
       return
     }
     var payload = JSON.stringify({
-      positionX: positionX,
-      positionY: positionY,
+      positionX: Math.round(positionX),
+      positionY: Math.round(positionY),
       direction: direction,
       currentScreenIndex: currentScreenIndex,
       scale: scale,
@@ -800,12 +810,10 @@ Item {
       showShadow: showShadow,
       followCursor: followCursor
     })
-    // Write through a bash redirect. Quickshell's FileView is read-only
-    // (no setContents), so the cleanest portable write is to shell out
-    // to tee which creates the file if needed and overwrites otherwise.
+    // Write state payload directly into the state file.
     saveStateProc.command = ["bash", "-c",
-      "mkdir -p \"$0\" && printf '%s' \"$1\" > \"$2\"",
-      service.stateDir, payload, service.statePath]
+      "printf '%s' \"$0\" > \"$1\"",
+      payload, service.statePath]
     saveStateProc.running = true
   }
 
@@ -817,17 +825,14 @@ Item {
     }
   }
 
-  // Watch the position so a debounced save runs whenever the fox moves.
-  // Without this the file would thrash on every physics tick.
+  // Debounced persistence timer. Fired on discrete transitions (stops, drops,
+  // sleep, toggles, settings changes) rather than on every walking step.
   Timer {
     id: saveDebounce
     interval: 600
     repeat: false
     onTriggered: service.saveState()
   }
-  onPositionXChanged: if (service.enabled) saveDebounce.restart()
-  onPositionYChanged: if (service.enabled) saveDebounce.restart()
-  onDirectionChanged: saveDebounce.restart()
   onPhysicsEnabledChanged: if (service.enabled) saveDebounce.restart()
   onShowShadowChanged: if (service.enabled) saveDebounce.restart()
   onFollowCursorChanged: if (service.enabled) saveDebounce.restart()
@@ -843,7 +848,6 @@ Item {
       service.stateDirCreated = code === 0
       if (service.stateDirCreated) {
         service.loadState()
-        petMetaLoader.reload()
       }
     }
   }
@@ -889,6 +893,7 @@ Item {
         }
       }
       petMetaLoaded = true
+      animTimer.interval = animTimer.cadenceFor()
     } catch (e) {
       console.warn("fox-pet: pet.json unreadable, using defaults:", e)
     }
