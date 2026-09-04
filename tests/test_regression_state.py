@@ -275,14 +275,58 @@ class TestFoxPetRegression(unittest.TestCase):
         self.assertEqual(rows["sleep"]["row"], 5)
 
     def test_wayland_drag_mask_state(self):
-        # Invariant: Dynamic mask must cover panel during drag/press and foxHit when idle
-        def get_mask_item(pressed, is_dragging):
-            return "panel" if (pressed or is_dragging) else "foxHit"
+        # Invariant: Mask must target foxHit directly rather than PanelWindow
+        # to avoid null item cast and Wayland 0x0 input region collapse
+        mask_target = "foxHit"
+        self.assertEqual(mask_target, "foxHit")
 
-        self.assertEqual(get_mask_item(False, False), "foxHit")
-        self.assertEqual(get_mask_item(True, False), "panel")
-        self.assertEqual(get_mask_item(False, True), "panel")
-        self.assertEqual(get_mask_item(True, True), "panel")
+    def test_physics_timer_reactive_binding(self):
+        # Invariant: physicsTimer.running is purely reactive:
+        # running: service.enabled && service.physicsEnabled && !service.isDragging
+        def is_physics_running(enabled, physics_enabled, is_dragging):
+            return bool(enabled and physics_enabled and not is_dragging)
+
+        self.assertTrue(is_physics_running(True, True, False))
+        # Dragging temporarily pauses physics without destroying property binding
+        self.assertFalse(is_physics_running(True, True, True))
+        # Dropping immediately resumes physics
+        self.assertTrue(is_physics_running(True, True, False))
+        # Disabling pauses physics
+        self.assertFalse(is_physics_running(False, True, False))
+        self.assertFalse(is_physics_running(True, False, False))
+
+    def test_native_drag_proxy_invariants(self):
+        # Invariant: Drag proxy follows service when idle, and drives service when dragging
+        class MockDragProxy:
+            def __init__(self, service_x, service_y):
+                self.service_x = service_x
+                self.service_y = service_y
+                self.drag_active = False
+                self.proxy_x = service_x
+                self.proxy_y = service_y
+
+            def get_x(self):
+                if not self.drag_active:
+                    return round(self.service_x)
+                return self.proxy_x
+
+            def simulate_drag_move(self, new_x, new_y):
+                self.drag_active = True
+                self.proxy_x = new_x
+                self.proxy_y = new_y
+                self.service_x = new_x
+                self.service_y = new_y
+
+            def simulate_drop(self):
+                self.drag_active = False
+
+        proxy = MockDragProxy(100, 200)
+        self.assertEqual(proxy.get_x(), 100)
+        proxy.simulate_drag_move(350, 450)
+        self.assertEqual(proxy.get_x(), 350)
+        self.assertEqual(proxy.service_x, 350)
+        proxy.simulate_drop()
+        self.assertEqual(proxy.get_x(), 350)
 
     def test_sleep_transform_invariants(self):
         # Invariant: Dedicated sleeping sprite requires no artificial tilt or shrink

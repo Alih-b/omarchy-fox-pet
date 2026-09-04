@@ -359,6 +359,7 @@ Item {
   }
 
   function pickNextAction() {
+    if (isDragging) return
     // If manual sleep is active, stay asleep until user interacts.
     if (petState === stateSleep && manualSleep) return
 
@@ -665,7 +666,6 @@ Item {
     enabled = true
     animTimer.interval = animTimer.cadenceFor()
     animTimer.restart()
-    if (physicsEnabled) physicsTimer.restart()
     // Kick off the first AI decision immediately if nothing is pending.
     if (!actionTimer.running) pickNextAction()
     saveState()
@@ -674,7 +674,6 @@ Item {
   function disable() {
     enabled = false
     animTimer.stop()
-    physicsTimer.stop()
     actionTimer.stop()
     pointerGlanceTimer.stop()
     velocityX = 0
@@ -758,11 +757,7 @@ Item {
     if (!values || typeof values !== "object") return
     if (typeof values.scale === "number" && isFinite(values.scale)
         && values.scale >= 0.5 && values.scale <= 2.0) scale = values.scale
-    if (typeof values.physicsEnabled === "boolean") {
-      physicsEnabled = values.physicsEnabled
-      if (physicsEnabled && enabled) physicsTimer.restart()
-      else physicsTimer.stop()
-    }
+    if (typeof values.physicsEnabled === "boolean") physicsEnabled = values.physicsEnabled
     if (typeof values.showShadow === "boolean") showShadow = values.showShadow
     if (typeof values.followCursor === "boolean") followCursor = values.followCursor
   }
@@ -918,7 +913,8 @@ Item {
     printErrors: false
     onLoaded: service.loadState()
     onLoadFailed: {
-      // No prior state — leave defaults from loadState().
+      // No prior state — compute defaults from loadState().
+      service.loadState()
     }
   }
 

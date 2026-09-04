@@ -149,11 +149,9 @@ Item {
       // this very scene, which is why clicks silently failed before.
       exclusionMode: ExclusionMode.Ignore
       mask: Region {
-        // While pressed or actively dragging, the input region expands to the
-        // entire screen panel so high-speed dragging never loses pointer capture
-        // across Wayland surface boundaries. When released, it contracts snugly
-        // to foxHit so clicks anywhere outside the fox pass cleanly through.
-        item: (foxHit.pressed || (root.service && root.service.isDragging)) ? panel : foxHit
+        // Confines the Wayland input region to the fox hit area so clicks
+        // anywhere outside the fox pass cleanly through to windows underneath.
+        item: foxHit
       }
 
       // Hint banner the first time the user summons the fox. Hides
@@ -169,8 +167,8 @@ Item {
         color: Qt.rgba(0.12, 0.12, 0.12, 0.85)
         border.color: Qt.rgba(1, 1, 1, 0.18)
         border.width: 1
-        x: Math.max(20, Math.min(panel.width - width - 20, Math.round(root.serviceX + root.scaledCellWidth / 2 - width / 2)))
-        y: Math.max(20, Math.round(root.serviceY - height - 12))
+        x: Math.max(20, Math.min(panel.width - width - 20, Math.round(dragProxy.x + root.scaledCellWidth / 2 - width / 2)))
+        y: Math.max(20, Math.round(dragProxy.y - height - 12))
 
         Text {
           id: hintText
@@ -196,10 +194,10 @@ Item {
         id: shadow
         visible: root.service && root.service.showShadow
         opacity: root.isSleeping ? 0.8 : root.shadowFade
-        x: Math.round(root.serviceX + (root.scaledCellWidth - width) / 2)
+        x: Math.round(dragProxy.x + (root.scaledCellWidth - width) / 2)
         y: root.service
           ? Math.round(root.service.groundY + root.scaledCellHeight - 12 * root.scale)
-          : Math.round(root.serviceY + root.scaledCellHeight - 12 * root.scale)
+          : Math.round(dragProxy.y + root.scaledCellHeight - 12 * root.scale)
         width: Math.round(root.scaledCellWidth * (0.65 + Math.min(0.2, root.altitude / 600.0)))
         height: Math.round(18 * root.scale * (1.0 + Math.min(0.3, root.altitude / 500.0)))
 
@@ -230,177 +228,161 @@ Item {
         }
       }
 
-      // Fox sprite. Pixel-rounded integer coordinates prevent bilinear
-      // texture blur and shimmering while walking.
+      // Drag proxy item: coordinates bound to service when idle,
+      // driven directly by QtQuick drag handler during active drag.
       Item {
-        id: fox
-        x: Math.round(root.serviceX)
-        y: Math.round(root.serviceY)
+        id: dragProxy
+        Binding on x {
+          when: !foxHit.drag.active
+          value: Math.round(root.serviceX)
+        }
+        Binding on y {
+          when: !foxHit.drag.active
+          value: Math.round(root.serviceY)
+        }
         width: root.scaledCellWidth
         height: root.scaledCellHeight
-        clip: true
 
+        onXChanged: {
+          if (foxHit.drag.active && root.service) {
+            root.service.positionX = dragProxy.x
+          }
+        }
+        onYChanged: {
+          if (foxHit.drag.active && root.service) {
+            root.service.positionY = dragProxy.y
+          }
+        }
+
+        // Fox sprite. Pixel-rounded integer coordinates prevent bilinear
+        // texture blur and shimmering while walking.
         Item {
-          id: flipper
+          id: fox
           anchors.fill: parent
-          transformOrigin: Item.Bottom
-          rotation: root.sleepTilt
-          scale: root.sleepScale
+          clip: true
 
-          Image {
-            id: sprite
+          Item {
+            id: flipper
             anchors.fill: parent
-            source: root.spriteUrl
-            fillMode: Image.Stretch
-            smooth: true
-            mipmap: true
-            asynchronous: false
-            cache: true
-            mirror: root.facingScale === -1
-            sourceClipRect: Qt.rect(root.frameX, root.frameY, root.cellWidth, root.cellHeight)
-            sourceSize: Qt.size(root.cellWidth * root.columns,
-                                root.cellHeight * root.rowCount)
-          }
-        }
-      }
+            transformOrigin: Item.Bottom
+            rotation: root.sleepTilt
+            scale: root.sleepScale
 
-      // Proximity hover area: detects cursor direction to glance naturally
-      // without capturing or blocking any mouse clicks.
-      MouseArea {
-        id: proximityArea
-        x: Math.round(fox.x - (width - fox.width) / 2)
-        y: Math.round(fox.y - (height - fox.height) / 2)
-        width: Math.round(root.scaledCellWidth * 1.8)
-        height: Math.round(root.scaledCellHeight * 1.4)
-        hoverEnabled: true
-        acceptedButtons: Qt.NoButton
-
-        onPositionChanged: function(mouse) {
-          if (!root.service || !root.service.followCursor) return
-          if (root.service.isDragging || root.service.isJumping) return
-          var centerDist = mouse.x - width / 2
-          if (Math.abs(centerDist) > 8) {
-            root.service.pointerGlanceDirection = centerDist > 0 ? 1 : -1
-            root.service.pointerNear = true
-          }
-        }
-        onExited: {
-          if (root.service) root.service.pointerNear = false
-        }
-      }
-
-      // Snug click + drag surface. Calibrated to the visible fox body,
-      // eliminating cursor jitter via parent-mapped coordinates, supporting
-      // cross-monitor drag, and cleanly discriminating single vs double clicks.
-      MouseArea {
-        id: foxHit
-        x: Math.round(fox.x + fox.width * 0.1)
-        y: Math.round(fox.y + fox.height * 0.15)
-        width: Math.round(fox.width * 0.8)
-        height: Math.round(fox.height * 0.82)
-        cursorShape: root.service && root.service.isDragging
-          ? Qt.ClosedHandCursor
-          : Qt.PointingHandCursor
-        hoverEnabled: true
-        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
-
-        property real grabOffsetX: 0
-        property real grabOffsetY: 0
-        property real pressMouseX: 0
-        property real pressMouseY: 0
-        property bool dragMoved: false
-        property bool pressed: false
-
-        onPressed: function(mouse) {
-          pressed = true
-          dragMoved = false
-          pressMouseX = mouse.x
-          pressMouseY = mouse.y
-          var pt = foxHit.mapToItem(panel, mouse.x, mouse.y)
-          grabOffsetX = pt.x - root.serviceX
-          grabOffsetY = pt.y - root.serviceY
-          if (root.service) {
-            root.service.cancelSleep()
-          }
-        }
-
-        onPositionChanged: function(mouse) {
-          if (!pressed || !root.service) return
-          if (!dragMoved) {
-            if (Math.abs(mouse.x - pressMouseX) > 4 || Math.abs(mouse.y - pressMouseY) > 4) {
-              dragMoved = true
-              root.service.isDragging = true
+            Image {
+              id: sprite
+              anchors.fill: parent
+              source: root.spriteUrl
+              fillMode: Image.Stretch
+              smooth: true
+              mipmap: true
+              asynchronous: false
+              cache: true
+              mirror: root.facingScale === -1
+              sourceClipRect: Qt.rect(root.frameX, root.frameY, root.cellWidth, root.cellHeight)
+              sourceSize: Qt.size(root.cellWidth * root.columns,
+                                  root.cellHeight * root.rowCount)
             }
           }
-          if (!dragMoved) return
-
-          var pt = foxHit.mapToItem(panel, mouse.x, mouse.y)
-          var targetLocalX = pt.x - grabOffsetX
-          var targetLocalY = pt.y - grabOffsetY
-
-          // Update position without switching currentScreenIndex during drag,
-          // which would destroy/hide this panel window mid-drag and drop the Wayland grab.
-          root.service.positionX = targetLocalX
-          root.service.positionY = targetLocalY
         }
 
-        onReleased: function(mouse) {
-          var wasPressed = pressed
-          pressed = false
-          hint.dismissed = true
-          if (!root.service) return
-          var wasDrag = dragMoved
-          dragMoved = false
-          if (wasDrag) {
-            // Check if dropped onto another monitor at release time
-            var abs = root.service.toAbsolute(root.service.positionX, root.service.positionY)
-            var at = root.service.screenAt(abs.x, abs.y)
-            if (at && at.index !== root.service.currentScreenIndex) {
-              root.service.currentScreenIndex = at.index
-              var local = root.service.toLocal(abs.x, abs.y, at.index)
-              root.service.positionX = local.x
-              root.service.positionY = local.y
-              root.service.recomputeGround()
+        // Snug click + drag surface. Calibrated to the visible fox body,
+        // using QtQuick native drag.target to guarantee stable pointer capture,
+        // and cleanly discriminating single vs double clicks.
+        MouseArea {
+          id: foxHit
+          x: Math.round(parent.width * 0.1)
+          y: Math.round(parent.height * 0.15)
+          width: Math.round(parent.width * 0.8)
+          height: Math.round(parent.height * 0.82)
+          cursorShape: root.service && root.service.isDragging
+            ? Qt.ClosedHandCursor
+            : Qt.PointingHandCursor
+          hoverEnabled: true
+          acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+
+          drag.target: dragProxy
+          drag.axis: Drag.XAndYAxis
+          drag.minimumX: 0
+          drag.maximumX: panel.width - root.scaledCellWidth
+          drag.minimumY: 0
+          drag.maximumY: panel.height - root.scaledCellHeight
+
+          drag.onActiveChanged: {
+            if (!root.service) return
+            root.service.isDragging = drag.active
+            if (!drag.active) {
+              // Check if dropped onto another monitor at release time
+              var abs = root.service.toAbsolute(dragProxy.x, dragProxy.y)
+              var at = root.service.screenAt(abs.x, abs.y)
+              if (at && at.index !== root.service.currentScreenIndex) {
+                root.service.currentScreenIndex = at.index
+                var local = root.service.toLocal(abs.x, abs.y, at.index)
+                root.service.positionX = local.x
+                root.service.positionY = local.y
+                root.service.recomputeGround()
+              }
+              var g = root.service.currentScreen()
+                ? root.service.screenGeometry(root.service.currentScreen()).height
+                  - root.scaledCellHeight - root.service.groundMargin
+                : 0
+              root.service.settleDrop(g)
             }
-            var g = root.service.currentScreen()
-              ? root.service.screenGeometry(root.service.currentScreen()).height
-                - root.scaledCellHeight - root.service.groundMargin
-              : 0
-            root.service.settleDrop(g)
-          } else if (root.service.isDragging) {
-            root.service.isDragging = false
           }
-        }
 
-        onClicked: function(mouse) {
-          hint.dismissed = true
-          if (dragMoved || !root.service) return
-          if (mouse.button === Qt.RightButton) {
-            root.service.resetPosition()
-            return
+          onCanceled: {
+            if (root.service) root.service.isDragging = false
           }
-          if (mouse.button === Qt.MiddleButton) {
-            root.service.sleepToggle()
-            return
-          }
-          if (mouse.button !== Qt.LeftButton) return
 
-          // Double-click discrimination: cancels single-click timer so poke is never triggered
-          if (singleClickTimer.running) {
-            singleClickTimer.stop()
-            root.service.sleepNow()
-          } else {
-            singleClickTimer.restart()
+          onPressed: function(mouse) {
+            if (root.service) {
+              root.service.cancelSleep()
+            }
           }
-        }
 
-        Timer {
-          id: singleClickTimer
-          interval: 220
-          repeat: false
-          onTriggered: {
-            if (root.service && !root.service.isDragging) {
-              root.service.poke()
+          onPositionChanged: function(mouse) {
+            if (!root.service || !root.service.followCursor) return
+            if (root.service.isDragging || root.service.isJumping) return
+            var centerDist = mouse.x - width / 2
+            if (Math.abs(centerDist) > 8) {
+              root.service.pointerGlanceDirection = centerDist > 0 ? 1 : -1
+              root.service.pointerNear = true
+            }
+          }
+
+          onExited: {
+            if (root.service) root.service.pointerNear = false
+          }
+
+          onClicked: function(mouse) {
+            hint.dismissed = true
+            if (!root.service || foxHit.drag.active) return
+            if (mouse.button === Qt.RightButton) {
+              root.service.resetPosition()
+              return
+            }
+            if (mouse.button === Qt.MiddleButton) {
+              root.service.sleepToggle()
+              return
+            }
+            if (mouse.button !== Qt.LeftButton) return
+
+            // Double-click discrimination: cancels single-click timer so poke is never triggered
+            if (singleClickTimer.running) {
+              singleClickTimer.stop()
+              root.service.sleepNow()
+            } else {
+              singleClickTimer.restart()
+            }
+          }
+
+          Timer {
+            id: singleClickTimer
+            interval: 220
+            repeat: false
+            onTriggered: {
+              if (root.service && !root.service.isDragging) {
+                root.service.poke()
+              }
             }
           }
         }
