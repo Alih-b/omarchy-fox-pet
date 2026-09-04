@@ -1,0 +1,49 @@
+# Python build / venv artifacts (the plugin itself is QML but the
+# repo may end up with a small Python test harness down the road).
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.env
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Quickshell / QML caches and build artifacts.
+.qml-cache/
+.qmlc/
+*.qmlc
+
+# Editor / IDE scratch.
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.*.bak
+
+# OS junk.
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# Shell history / log files that sometimes end up in project trees.
+*.log
+*.log.*
+nohup.out
+
+# Temporary capture / scratch directories created during development.
+tmp/
+tmp.*
+scratch/
