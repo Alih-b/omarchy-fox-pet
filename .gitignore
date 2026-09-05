@@ -47,6 +47,8 @@ nohup.out
 tmp/
 tmp.*
 scratch/
+output/
+.serena/
 
 # Command Code session data.
 .commandcode/

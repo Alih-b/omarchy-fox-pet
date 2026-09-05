@@ -70,8 +70,8 @@ Item {
   readonly property var defaultRows: ({
     "idle":       { row: 0, frames: 7, fps: 5, sequence: [0, 1, 2, 1, 0, 1, 2, 1, 0, 4, 0, 5, 0, 6], durations: [3600, 90, 110, 90, 3600, 90, 110, 90, 4200, 140, 3800, 120, 4000, 160] },
     "walk":       { row: 1, frames: 8, fps: 8 },
-    "sitRight":   { row: 1, frames: 8, fps: 4 },
-    "sitLeft":    { row: 2, frames: 8, fps: 4 },
+    "sitRight":   { row: 2, frames: 3, fps: 1000 / 240 },
+    "sitLeft":    { row: 2, frames: 3, fps: 1000 / 240 },
     "greet":      { row: 3, frames: 4, fps: 10, sequence: [0, 1, 2, 1, 3], durations: [80, 90, 260, 90, 140] },
     "yawn":       { row: 4, frames: 5, fps: 4, sequence: [0, 1, 2, 3, 4], durations: [200, 220, 520, 240, 280] },
     "sleep":      { row: 5, frames: 8, fps: 5, sequence: [3, 4, 6, 7, 3, 4, 6, 7, 5], durations: [900, 800, 1100, 1300, 900, 800, 1100, 1300, 220] },
@@ -137,6 +137,16 @@ Item {
   readonly property real landingBraking: 0.075
   readonly property real maxFallSpeed: 3.2
   property string sleepTransition: ""
+  // Row 2 is a left-facing seated hinge: hold, half-rise, stand.
+  property string sitPoseState: stateSitLeft
+  property string sitTransition: ""
+  property int sitFrame: 2
+  property real sitElapsed: 0
+  function isSitState(state) {
+    return state === stateSitLeft || state === stateSitRight
+  }
+  readonly property bool showingSit: (sitTransition !== "" || isSitState(petState))
+    && Math.abs(velocityX) < 0.01
   readonly property real landingSquash: {
     if (manualSleep || isDragging) return 0
     if (movementPhase === "contact")
@@ -151,14 +161,15 @@ Item {
   // leap row is a poor falling pose and causes a silhouette pop on contact.
   readonly property string spriteState: isDragging ? (manualSleep ? stateSleep : stateIdle)
     : movementPhase !== "grounded" ? (manualSleep && sleepTransition !== "curl" ? stateSleep : stateIdle)
+    : showingSit ? sitPoseState
     : sleepTransition !== "" ? stateYawn
     : turnStep >= 0 ? stateSpin
     : manualSleep ? stateSleep
     : Math.abs(velocityX) > 0.01 ? stateWalk : petState
   readonly property var spriteSpec: rows[spriteState] || rows[stateIdle]
   readonly property int spriteFrame: {
-    if (isDragging || movementPhase !== "grounded"
-        || spriteState === stateSitLeft || spriteState === stateSitRight) return 0
+    if (isDragging || movementPhase !== "grounded") return 0
+    if (isSitState(spriteState)) return sitFrame
     if (sleepTransition !== "") {
       var curl = [2, 1, 0, 4]
       var wake = [4, 0, 1, 2]
@@ -230,6 +241,7 @@ Item {
   }
 
   readonly property real spriteFacing: {
+    if (isSitState(spriteState)) return sitPoseState === stateSitRight ? -1 : 1
     if (turnStep >= 0) {
       if (turnFromDir === 1) {
         return turnStep > 2 ? -1 : 1
@@ -431,6 +443,18 @@ Item {
     // actually changes so a re-entry doesn't reset a walk in progress.
     var changed = petState !== next
     var waking = petState === stateSleep && next !== stateSleep
+    if (isDragging || movementPhase !== "grounded") {
+      sitTransition = ""
+      sitFrame = 2
+      sitElapsed = 0
+    } else if (changed && isSitState(next)) {
+      sitPoseState = next
+      sitTransition = "down"
+      sitElapsed = 0
+    } else if (changed && (isSitState(petState) || sitTransition !== "")) {
+      sitTransition = "up"
+      sitElapsed = 0
+    }
     petState = next
     if (changed) sleepTransition = next === stateSleep ? "curl" : waking ? "wake" : ""
     if (changed || next === stateGreet || next === statePlay || next === stateSpin || next === stateSomersault) {
@@ -689,6 +713,7 @@ Item {
     }
     function cadenceFor() {
       var spec = service.spriteSpec
+      if (service.showingSit) return 240
       if (service.sleepTransition !== "" || spec.durations) return 50
       return Math.max(60, Math.round(1000 / spec.fps))
     }
@@ -698,6 +723,20 @@ Item {
     if (!(elapsedMs > 0) || !isFinite(elapsedMs)) return
     if (isDragging || movementPhase !== "grounded") return
     var spec = spriteSpec
+    if (isSitState(spriteState)) {
+      if (sitTransition === "") return
+      sitElapsed += elapsedMs
+      while (sitElapsed >= 240 && sitTransition !== "") {
+        sitElapsed -= 240
+        if (sitTransition === "down" && sitFrame > 0) sitFrame--
+        else if (sitTransition === "up" && sitFrame < 2) sitFrame++
+        else {
+          sitTransition = ""
+          sitElapsed = 0
+        }
+      }
+      return
+    }
     if (sleepTransition !== "") {
       var transitionElapsed = animationElapsed + elapsedMs
       var advance = Math.floor(transitionElapsed / 240)
@@ -725,7 +764,6 @@ Item {
       if (slot !== frameIndex) frameIndex = slot
       return
     }
-    if (spriteState === stateSitLeft || spriteState === stateSitRight) return
     if (spriteState === stateWalk) elapsedMs *= Math.min(1, Math.abs(velocityX) / walkSpeed)
     var frameMs = 1000 / spec.fps
     var elapsed = animationElapsed + elapsedMs
@@ -748,7 +786,7 @@ Item {
     var acceleration = horizontalAcceleration * dt
     // Include the next discrete step in the stopping distance so braking
     // reaches the wall at rest, without a final velocity discontinuity.
-    var target = petState === stateWalk && movementPhase === "grounded" && positionY >= ground
+    var target = petState === stateWalk && sitTransition === "" && movementPhase === "grounded" && positionY >= ground
       ? direction * Math.min(walkSpeed,
           Math.sqrt(acceleration * acceleration + 2 * horizontalAcceleration * distance) - acceleration) : 0
     var vx = velocityX + Math.max(-acceleration, Math.min(acceleration, target - velocityX))

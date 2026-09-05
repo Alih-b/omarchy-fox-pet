@@ -3,7 +3,7 @@
   "displayName": "Folio",
   "description": "A calm, curious ink-blue maker fox who turns rough ideas into clear, polished artifacts.",
   "spritesheetPath": "spritesheet.webp",
-  "spriteVersionNumber": 3,
+  "spriteVersionNumber": 4,
   "kind": "animal",
   "sprite": {
     "columns": 8,
@@ -13,8 +13,8 @@
     "rows": {
       "idle":       { "row": 0, "frames": 7, "fps": 5, "sequence": [0, 1, 2, 1, 0, 1, 2, 1, 0, 4, 0, 5, 0, 6], "durations": [3600, 90, 110, 90, 3600, 90, 110, 90, 4200, 140, 3800, 120, 4000, 160] },
       "walk":       { "row": 1, "frames": 8, "fps": 8 },
-      "sitRight":   { "row": 1, "frames": 8, "fps": 4 },
-      "sitLeft":    { "row": 2, "frames": 8, "fps": 4 },
+      "sitRight":   { "row": 2, "frames": 3, "fps": 4.166666666666667 },
+      "sitLeft":    { "row": 2, "frames": 3, "fps": 4.166666666666667 },
       "greet":      { "row": 3, "frames": 4, "fps": 10, "sequence": [0, 1, 2, 1, 3], "durations": [80, 90, 260, 90, 140] },
       "yawn":       { "row": 4, "frames": 5, "fps": 4, "sequence": [0, 1, 2, 3, 4], "durations": [200, 220, 520, 240, 280] },
       "sleep":      { "row": 5, "frames": 8, "fps": 5, "sequence": [3, 4, 6, 7, 3, 4, 6, 7, 5], "durations": [900, 800, 1100, 1300, 900, 800, 1100, 1300, 220] },
