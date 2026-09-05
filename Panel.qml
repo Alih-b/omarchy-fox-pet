@@ -90,10 +90,7 @@ Item {
   // doesn't depend on whatever cwd the shell happened to launch in.
   readonly property string spriteUrl: service ? service.spriteUrl : Qt.resolvedUrl("assets/spritesheet.webp")
 
-  // Direction mirrors the sprite horizontally. The flipper's transform
-  // list does ONLY a horizontal mirror — never a vertical one — so
-  // `scale: -1` doesn't accidentally flip the fox upside-down.
-  readonly property real facingScale: service && service.spriteState === service.stateWalk && service.direction === -1 ? -1 : 1
+  // Direction mirrors the sprite horizontally via the eased facingX.
 
   // Dedicated curled-up sleep sprite in row 5 requires no synthetic tilt or shrink.
   readonly property bool isSleeping: service && service.petState === service.stateSleep
@@ -273,11 +270,20 @@ Item {
           frameRow: root.frameRow
           frameCol: root.frameCol
           frameOffsetY: root.service ? root.service.spriteOffsetY : 0
-          facing: root.facingScale
+          facing: root.service ? root.service.spriteFacing : 1
+          isTurning: root.service ? root.service.turnStep >= 0 : false
+          tiltDeg: root.service ? root.service.tiltDeg : 0
+          walkPhase: root.service ? root.service.walkPhase : 0
+          speedMix: root.service ? root.service.speedMix : 0
+          emoteSway: root.service ? (root.service.spriteState === root.service.statePlay
+            || root.service.spriteState === root.service.stateGreet) : false
           squash: root.service ? root.service.landingSquash : 0
           suspended: root.service && (root.service.movementPhase === "falling" || root.service.movementPhase === "rising")
           sleeping: root.isSleeping
           softenFrames: root.service && root.service.spriteState === root.service.stateYawn
+          spriteFast: root.service && (root.service.spriteState === root.service.stateWalk
+            || root.service.spriteState === root.service.statePlay
+            || root.service.spriteState === root.service.stateGreet)
           breathing: root.service && root.service.movementPhase === "grounded"
             && (root.service.spriteState === root.service.stateIdle || root.service.spriteState === root.service.stateSleep)
           active: panel.visible

@@ -72,8 +72,8 @@ Item {
     "walk":       { row: 1, frames: 8, fps: 8 },
     "sitRight":   { row: 1, frames: 8, fps: 4 },
     "sitLeft":    { row: 2, frames: 8, fps: 4 },
-    "greet":      { row: 3, frames: 4, fps: 8 },
-    "yawn":       { row: 4, frames: 5, fps: 3 },
+    "greet":      { row: 3, frames: 4, fps: 10 },
+    "yawn":       { row: 4, frames: 5, fps: 4 },
     "sleep":      { row: 5, frames: 8, fps: 5 },
     "play":       { row: 6, frames: 6, fps: 8 },
     "think":      { row: 7, frames: 6, fps: 5 },
@@ -152,6 +152,7 @@ Item {
   readonly property string spriteState: isDragging ? (manualSleep ? stateSleep : stateIdle)
     : movementPhase !== "grounded" ? (manualSleep && sleepTransition !== "curl" ? stateSleep : stateIdle)
     : sleepTransition !== "" ? stateYawn
+    : turnStep >= 0 ? stateSpin
     : manualSleep ? stateSleep
     : Math.abs(velocityX) > 0.01 ? stateWalk : petState
   readonly property var spriteSpec: rows[spriteState] || rows[stateIdle]
@@ -163,6 +164,10 @@ Item {
       var wake = [4, 0, 1, 2]
       return Math.min(spriteSpec.frames - 1, (sleepTransition === "curl" ? curl : wake)[Math.min(3, frameIndex)])
     }
+    if (turnStep >= 0) {
+      var turnFrames = [2, 1, 0, 1, 2]
+      return turnFrames[Math.max(0, Math.min(4, turnStep))]
+    }
     if (spriteState === stateWalk && Math.abs(velocityX) < walkSpeed * 0.25) return 0
     return spriteSpec.sequence ? spriteSpec.sequence[frameIndex % spriteSpec.sequence.length] : frameIndex % spriteSpec.frames
   }
@@ -171,7 +176,69 @@ Item {
   readonly property real spriteOffsetY: spriteState === stateSleep ? 9
     : spriteState === stateYawn ? [15, 0, 0, 0, 14][spriteFrame] || 0 : 0
   property real animationElapsed: 0
-  onSpriteStateChanged: { frameIndex = 0; animationElapsed = 0; animTimer.lastTick = Date.now() }
+  // Walk re-entry keeps its stride phase (no mid-stride pop); every other
+  // state change restarts locomotion blending from rest.
+  onSpriteStateChanged: {
+    frameIndex = 0
+    animationElapsed = 0
+    animTimer.lastTick = Date.now()
+    if (spriteState !== stateWalk) speedMix = 0
+  }
+
+  // ---------------------------------------------------------- visual motion
+  //
+  // Procedural in-betweens and perspective turnarounds.
+  // Instead of linearly scaling xScale through zero (which flips the 2D sprite
+  // like a paper coin), turns cycle through Row 9's authentic rotational frames
+  // (3/4 right -> slight right -> front -> slight left -> 3/4 left).
+  property int visualDirection: 1
+  property int turnStep: -1
+  property int turnFromDir: 1
+  property real walkPhase: 0
+  property real speedMix: 0
+  property real tiltDeg: 0
+  readonly property real strideLength: 24.0
+
+  function triggerTurn() {
+    if (!enabled || isDragging || movementPhase !== "grounded" || petState === stateSleep) {
+      visualDirection = direction
+      turnStep = -1
+      turnTimer.stop()
+      return
+    }
+    if (direction === visualDirection && turnStep === -1) return
+    turnFromDir = visualDirection
+    turnStep = 0
+    turnTimer.restart()
+  }
+
+  onDirectionChanged: triggerTurn()
+
+  Timer {
+    id: turnTimer
+    interval: 36
+    repeat: true
+    onTriggered: {
+      if (service.turnStep >= 0 && service.turnStep < 4) {
+        service.turnStep++
+      } else {
+        service.turnStep = -1
+        service.visualDirection = service.direction
+        turnTimer.stop()
+      }
+    }
+  }
+
+  readonly property real spriteFacing: {
+    if (turnStep >= 0) {
+      if (turnFromDir === 1) {
+        return turnStep > 2 ? -1 : 1
+      } else {
+        return turnStep < 2 ? -1 : 1
+      }
+    }
+    return (spriteState === stateWalk || spriteState === stateIdle) && direction === -1 ? -1 : 1
+  }
 
   // True while the user is dragging the fox around. The AI pauses so it
   // doesn't fight the user for control.
@@ -519,6 +586,9 @@ Item {
       velocityY = 0
     }
     movementPhase = physicsEnabled && positionY < ground ? "falling" : "grounded"
+    turnStep = -1
+    visualDirection = direction
+    turnTimer.stop()
     if (manualSleep || petState === stateSleep) {
       manualSleep = true
       setState(stateSleep)
@@ -539,6 +609,11 @@ Item {
     velocityY = 0
     isJumping = false
     contactAge = 0
+    speedMix = 0
+    tiltDeg = 0
+    turnStep = -1
+    visualDirection = direction
+    turnTimer.stop()
     movementPhase = "grounded"
     if (!manualSleep && petState !== stateSleep) setState(stateIdle)
   }
@@ -565,6 +640,9 @@ Item {
     isJumping = false
     movementPhase = "grounded"
     contactAge = 0
+    turnStep = -1
+    visualDirection = direction
+    turnTimer.stop()
   }
 
   function cursorAbsolute() {
@@ -683,6 +761,17 @@ Item {
     }
     if (velocityX !== vx) velocityX = vx
     if (positionX !== x) positionX = x
+    // Render-only in-betweens: stride keyed to distance (no foot-slide),
+    // locomotion weight eased toward speed, facing turned through zero,
+    // body leaned into acceleration and flight.
+    var travelled = Math.abs(vx * dt)
+    if (travelled > 0) walkPhase += travelled / strideLength * Math.PI
+    var speedTarget = Math.max(0, Math.min(1, Math.abs(vx) / walkSpeed))
+    speedMix += Math.max(-0.12 * dt, Math.min(0.12 * dt, speedTarget - speedMix))
+    if (speedMix < 0.001 && speedTarget === 0) speedMix = 0
+    var leanTarget = Math.max(-9, Math.min(9, (target - vx) * 6
+      + (movementPhase === "rising" ? -4 : movementPhase === "falling" ? 4 : 0)))
+    tiltDeg += Math.max(-1.2 * dt, Math.min(1.2 * dt, leanTarget - tiltDeg))
 
     if (positionY < ground || velocityY < 0) {
       var vy = velocityY + gravity * dt
@@ -800,6 +889,9 @@ Item {
     movementPhase = "grounded"
     contactAge = 0
     pointerNear = false
+    turnStep = -1
+    visualDirection = direction
+    turnTimer.stop()
     // Force a final flush so the next launch lands where the user left it.
     saveState()
   }
@@ -1094,6 +1186,7 @@ Item {
     animTimer.stop()
     physicsTimer.stop()
     actionTimer.stop()
+    turnTimer.stop()
     pointerGlanceTimer.stop()
     saveDebounce.stop()
     if (saveStateProc.running) saveStateProc.running = false

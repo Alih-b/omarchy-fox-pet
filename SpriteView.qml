@@ -3,6 +3,13 @@ import QtQuick
 
 // A shared atlas texture with two cell views only while a pose dissolves.
 // All deformation pivots around the paws, leaving placement and input alone.
+//
+// Procedural in-betweens fill the gaps:
+// - Turnaround is handled cleanly via Row 9 rotational frames in Service.qml.
+// - Facing is strictly discrete (+1 or -1), completely eliminating coin-flip distortions.
+// - Stride bob rides on render item only; dragProxy and hitbox remain unaffected.
+// - Subtle body tilt leans into movement.
+// - Subtle breathing cycles continuously while idle or sleeping.
 Item {
   id: root
 
@@ -15,11 +22,17 @@ Item {
   property int frameCol: 0
   property real frameOffsetY: 0
   property real facing: 1
+  property bool isTurning: false
+  property real tiltDeg: 0
+  property real walkPhase: 0
+  property real speedMix: 0
   property real squash: 0
   property bool suspended: false
   property bool sleeping: false
   property bool softenFrames: false
+  property bool spriteFast: false
   property bool breathing: false
+  property bool emoteSway: false
   property bool active: true
   property bool dragging: false
 
@@ -33,17 +46,33 @@ Item {
   property real poseMix: 1
   property real breath: 0
   property real stretch: suspended && !sleeping ? 0.025 : 0
+  property real sway: 0
   property bool ready: false
+
+  // Stride bob: two steps per phase cycle, amplitude scaled by speedMix so
+  // the body settles instead of snapping when locomotion eases out.
+  // Grounded only — suspension uses stretch, turning keeps feet planted.
+  readonly property real strideBob: (dragging || suspended || isTurning) ? 0 : Math.cos(walkPhase * 2) * 3.2 * speedMix
 
   function updatePose() {
     if (!ready) return
+    // When turning, cut frames crisply without crossfading to preserve 2D perspective sharpness.
+    if (isTurning) {
+      dissolve.stop()
+      poseMix = 1
+      currentRow = frameRow
+      currentFrame = frameCol
+      currentOffset = frameOffsetY
+      return
+    }
     if (currentRow >= 0 && (frameRow !== currentRow || (softenFrames && frameCol !== currentFrame))) {
       dissolve.stop()
       previousRow = currentRow
       previousFrame = currentFrame
       previousOffset = currentOffset
-      // Finish a crouch dissolve before its next 240ms pose arrives.
-      dissolve.duration = softenFrames ? 180 : sleeping || previousSleeping ? 420 : 160
+      // Keep fast locomotion and emote dissolves under one frame cadence so
+      // micro movements never visibly lag the physics step.
+      dissolve.duration = softenFrames ? 150 : spriteFast ? 90 : sleeping || previousSleeping ? 420 : 130
       poseMix = active && !dragging ? 0 : 1
       if (poseMix === 0) dissolve.start()
     }
@@ -56,6 +85,7 @@ Item {
   onFrameRowChanged: updatePose()
   onFrameColChanged: updatePose()
   onFrameOffsetYChanged: updatePose()
+  onIsTurningChanged: if (isTurning) { dissolve.stop(); poseMix = 1 }
   onDraggingChanged: if (dragging) { dissolve.stop(); poseMix = 1 }
   Component.onCompleted: { ready = true; updatePose() }
 
@@ -67,6 +97,15 @@ Item {
     NumberAnimation { to: 1; duration: 1700; easing.type: Easing.InOutSine }
     NumberAnimation { to: 0; duration: 1700; easing.type: Easing.InOutSine }
   }
+  // Tail-wag sway during emotes: slow lateral rock around the paws.
+  SequentialAnimation on sway {
+    running: root.active && root.emoteSway && !root.dragging
+    loops: Animation.Infinite
+    NumberAnimation { to: 1; duration: 520; easing.type: Easing.InOutSine }
+    NumberAnimation { to: -1; duration: 1040; easing.type: Easing.InOutSine }
+    NumberAnimation { to: 0; duration: 520; easing.type: Easing.InOutSine }
+  }
+  onEmoteSwayChanged: if (!emoteSway) sway = 0
 
   component AtlasCell: Item {
     property int row: 0
@@ -86,12 +125,23 @@ Item {
 
   Item {
     anchors.fill: parent
-    transform: Scale {
-      origin.x: root.width / 2
-      origin.y: root.height * (root.cellHeight - 5) / root.cellHeight
-      xScale: root.facing * (1 + root.squash - root.stretch / 2)
-      yScale: 1 - root.squash + root.stretch + (root.breathing ? root.breath * 0.008 : 0)
-    }
+    transform: [
+      Translate {
+        // Stride bob rides the render item only; dragProxy and hitbox stay put.
+        y: root.strideBob * root.height / root.cellHeight
+      },
+      Rotation {
+        origin.x: root.width / 2
+        origin.y: root.height * (root.cellHeight - 5) / root.cellHeight
+        angle: root.tiltDeg + (root.emoteSway ? root.sway * 2.5 : 0)
+      },
+      Scale {
+        origin.x: root.width / 2
+        origin.y: root.height * (root.cellHeight - 5) / root.cellHeight
+        xScale: (root.facing >= 0 ? 1 : -1) * (1 + root.squash - root.stretch / 2)
+        yScale: 1 - root.squash + root.stretch + (root.breathing ? root.breath * 0.008 : 0)
+      }
+    ]
     AtlasCell {
       width: root.width
       height: root.height
