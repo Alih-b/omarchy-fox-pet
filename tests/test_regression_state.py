@@ -496,6 +496,58 @@ class TestFoxPetRegression(unittest.TestCase):
         self.assertEqual(fox.visual_direction, 1)
         self.assertEqual(fox.turn_step, -1)
 
+    def test_walk_does_not_yaw_through_front(self):
+        _, src = self._turn_timer_interval_ms()
+        self.assertIn("petState === stateWalk || Math.abs(velocityX) > 0.01", src)
+        self.assertNotIn(
+            "else if (petState !== stateWalk) direction = Math.random() > 0.5 ? 1 : -1",
+            src,
+        )
+
+        fox = _TurnMachine()
+        fox.locomoting = True
+        fox.set_direction(-1)
+        self.assertEqual(fox.turn_step, -1)
+        self.assertEqual(fox.visual_direction, -1)
+        self.assertIsNone(fox.pose()[0], "walk reverse must stay in profile")
+
+    def test_petting_requires_stroke_reversals(self):
+        with open(os.path.join(self.repo_root, "Panel.qml"), "r", encoding="utf-8") as f:
+            panel = f.read()
+        self.assertIn("lastStrokeSign", panel)
+        self.assertIn("sign !== lastStrokeSign", panel)
+
+        def pets(xs, walking=False):
+            reversals = 0
+            last_sign = 0
+            last_x = 0
+            for x in xs:
+                if walking:
+                    last_x = x
+                    continue
+                if last_x != 0:
+                    delta = x - last_x
+                    if abs(delta) > 12:
+                        sign = 1 if delta > 0 else -1
+                        if last_sign and sign != last_sign:
+                            reversals += 1
+                            if reversals >= 4:
+                                return True
+                        last_sign = sign
+                last_x = x
+            return False
+
+        # Fox walking under a still cursor is monotonic relative motion.
+        self.assertFalse(pets([120, 100, 80, 60, 40, 20, 8]))
+        self.assertFalse(pets([8, 20, 40, 60, 80, 100], walking=True))
+        self.assertTrue(pets([8, 28, 8, 28, 8, 28, 8, 28, 8]))
+
+    def test_glance_only_when_parked(self):
+        _, src = self._turn_timer_interval_ms()
+        glance = src[src.find("onPointerNearChanged"):]
+        glance = glance[: glance.find("onScaleChanged")]
+        self.assertIn("Math.abs(velocityX) > 0.01", glance)
+
 
 class _TurnMachine:
     """Mirrors Service.qml yaw: 5 poses, reverse in place, no restart from 0."""
@@ -507,6 +559,7 @@ class _TurnMachine:
         self.visual_direction = 1
         self.turn_step = -1
         self.turn_from_dir = 1
+        self.locomoting = False
 
     def facing(self):
         if self.turn_step < 0:
@@ -522,6 +575,10 @@ class _TurnMachine:
 
     def trigger(self):
         if self.direction == self.visual_direction and self.turn_step == -1:
+            return
+        if self.locomoting:
+            self.visual_direction = self.direction
+            self.turn_step = -1
             return
         if self.turn_step >= 0:
             if self.turn_from_dir == self.direction:

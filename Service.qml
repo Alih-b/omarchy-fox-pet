@@ -221,6 +221,14 @@ Item {
       return
     }
     if (direction === visualDirection && turnStep === -1) return
+    // Walk stays in profile. A yaw through the front cell reads as the
+    // head swinging at the camera, then snapping back to the leap row.
+    if (petState === stateWalk || Math.abs(velocityX) > 0.01) {
+      visualDirection = direction
+      turnStep = -1
+      turnTimer.stop()
+      return
+    }
     if (turnStep >= 0) {
       if (turnFromDir === direction) {
         turnFromDir = -turnFromDir
@@ -475,12 +483,15 @@ Item {
     if (!changed) return
     // Actions choose the target; physics eases existing momentum toward it.
     if (next === stateWalk) {
+      turnStep = -1
+      turnTimer.stop()
       // Pick a direction unless the fox was already heading somewhere.
       if (velocityX === 0) {
         direction = (direction === 1 || direction === -1) ? direction : (Math.random() > 0.5 ? 1 : -1)
       } else {
         direction = velocityX >= 0 ? 1 : -1
       }
+      visualDirection = direction
     }
     // Greet/play/yawn/sleep/somersault pose always faces forward (their
     // frames are drawn right-facing). For other poses, facing tracks
@@ -559,7 +570,6 @@ Item {
       var rightMargin = g.width - cellWidth * scale - edgeMargin
       if (positionX <= leftMargin) direction = 1
       else if (positionX >= rightMargin) direction = -1
-      else if (petState !== stateWalk) direction = Math.random() > 0.5 ? 1 : -1
       // Re-arm the greet chain so the next time the user clicks the fox
       // gets a clean shot at two greets in a row.
       greetChainLeft = 1
@@ -865,6 +875,7 @@ Item {
   onPointerNearChanged: {
     if (!pointerNear || !followCursor || !enabled) return
     if (isJumping || isDragging) return
+    if (Math.abs(velocityX) > 0.01) return
     // Only glance in stationary poses so the fox never turns opposite its walk velocity
     if (petState === stateIdle || petState === stateSitRight || petState === stateSitLeft) {
       if (pointerGlanceDirection === 1 || pointerGlanceDirection === -1) {

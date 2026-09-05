@@ -312,6 +312,7 @@ Item {
 
           // Gesture state tracking
           property real lastStrokeX: 0
+          property int lastStrokeSign: 0
           property int strokeReversals: 0
           property real lastStrokeTime: 0
 
@@ -346,31 +347,42 @@ Item {
             if (!root.service) return
             if (drag.active) return
 
-            // Petting / stroking gesture detection (rubbing cursor horizontally across the fox)
-            var now = Date.now()
-            if (now - lastStrokeTime > 800) {
-              strokeReversals = 0
-              lastStrokeTime = now
-            }
-            if (lastStrokeX !== 0) {
-              var deltaX = mouse.x - lastStrokeX
-              if (Math.abs(deltaX) > 12) {
-                strokeReversals++
+            // The hitbox moves with the fox, so a still cursor looks like a
+            // stroke. Ignore locomotion, and only count actual direction flips.
+            var walking = root.service.petState === root.service.stateWalk
+              || Math.abs(root.service.velocityX) > 0.01
+            if (!walking) {
+              var now = Date.now()
+              if (now - lastStrokeTime > 800) {
+                strokeReversals = 0
+                lastStrokeSign = 0
                 lastStrokeTime = now
-                if (strokeReversals >= 4) {
-                  strokeReversals = 0
-                  if (root.service.petState === root.service.stateSleep) {
-                    root.service.poke()
-                  } else {
-                    root.service.startAction(root.service.statePlay, 1400)
+              }
+              if (lastStrokeX !== 0) {
+                var deltaX = mouse.x - lastStrokeX
+                if (Math.abs(deltaX) > 12) {
+                  var sign = deltaX > 0 ? 1 : -1
+                  if (lastStrokeSign !== 0 && sign !== lastStrokeSign) {
+                    strokeReversals++
+                    lastStrokeTime = now
+                    if (strokeReversals >= 4) {
+                      strokeReversals = 0
+                      lastStrokeSign = 0
+                      if (root.service.petState === root.service.stateSleep) {
+                        root.service.poke()
+                      } else {
+                        root.service.startAction(root.service.statePlay, 1400)
+                      }
+                    }
                   }
+                  lastStrokeSign = sign
                 }
               }
+              lastStrokeX = mouse.x
             }
-            lastStrokeX = mouse.x
 
             // Precise cursor glance: eliminate redundant property assignments at high polling rates
-            if (!root.service.followCursor || root.service.isJumping) return
+            if (!root.service.followCursor || root.service.isJumping || walking) return
             var centerDist = mouse.x - width / 2
             if (Math.abs(centerDist) > 8) {
               var newDir = centerDist > 0 ? 1 : -1
@@ -386,6 +398,7 @@ Item {
           onExited: {
             if (root.service) root.service.pointerNear = false
             strokeReversals = 0
+            lastStrokeSign = 0
             lastStrokeX = 0
           }
 
