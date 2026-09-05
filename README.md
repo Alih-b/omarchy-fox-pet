@@ -1,8 +1,8 @@
 <div align="center">
   <img width="800" height="604" alt="folio" src="https://github.com/user-attachments/assets/ca0bd050-72f6-4384-b217-44354abc265c" />
-  
+
   # Fox Pet
-  
+
   A desktop companion plugin for **Omarchy** featuring **Folio** the fox.
 </div>
 

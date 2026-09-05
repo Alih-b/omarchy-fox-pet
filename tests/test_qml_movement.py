@@ -7,6 +7,7 @@ and asserts the observable state transitions. No movement logic is copied into
 the test, so a change in Service.qml is what makes these tests fail or pass.
 """
 
+import json
 import os
 import selectors
 import shutil
@@ -37,6 +38,10 @@ HARNESS = textwrap.dedent(
       }
 
       Component.onCompleted: {
+        fox.applyPetMeta(__PET_META__)
+        check(fox.rows.idle.frames === 7 && fox.rows.play.frames === 6
+              && fox.rows.think.frames === 6 && fox.rows.alert.frames === 6,
+              "metadata excludes empty trailing cells")
         // Keep the scheduler out of these checks; each test advances the real
         // production step exactly once.
         fox.enabled = false
@@ -48,8 +53,8 @@ HARNESS = textwrap.dedent(
         fox.velocityX = 2
         fox.velocityY = 0
         fox.physicsStep()
-        check(closeEnough(fox.positionX, 202), "step advances horizontal position")
-        check(closeEnough(fox.positionY, 300.45), "step applies gravity")
+        check(closeEnough(fox.positionX, 201.88), "step eases horizontal momentum")
+        check(closeEnough(fox.positionY, 300 + fox.gravity), "step applies gravity")
 
         fox.positionX = 0
         fox.positionY = 300
@@ -58,8 +63,8 @@ HARNESS = textwrap.dedent(
         fox.direction = -1
         fox.physicsStep()
         check(fox.positionX === fox.edgeMargin, "left wall clamps to edge margin")
-        check(fox.direction === 1 && closeEnough(fox.velocityX, fox.walkSpeed),
-              "left wall reverses movement and facing")
+        check(fox.direction === 1 && fox.velocityX === 0,
+              "left wall turns at rest")
 
         var screenGeometry = fox.screenGeometry(fox.currentScreen())
         var rightEdge = screenGeometry.width - fox.cellWidth * fox.scale - fox.edgeMargin
@@ -69,38 +74,83 @@ HARNESS = textwrap.dedent(
         fox.velocityY = 0
         fox.physicsStep()
         check(closeEnough(fox.positionX, rightEdge), "right wall clamps to edge margin")
-        check(fox.direction === -1 && closeEnough(fox.velocityX, -fox.walkSpeed),
-              "right wall reverses movement and facing")
+        check(fox.direction === -1 && fox.velocityX === 0,
+              "right wall turns at rest")
 
         fox.positionX = 200
         fox.positionY = fox.groundY
         fox.velocityX = 0
         fox.velocityY = 4
         fox.physicsStep()
-        check(fox.velocityY < 0, "fast landing bounces upward")
-        check(fox.positionY < fox.groundY, "bounce advances above ground")
+        check(fox.velocityY === 0, "fast landing never rebounds")
+        check(fox.positionY === fox.groundY && fox.movementPhase === "contact",
+              "floor crossing enters contact without penetration")
 
         fox.petState = fox.statePlay
         fox.isJumping = true
         fox.positionY = fox.groundY
         fox.velocityY = 0.5
         fox.physicsStep()
-        check(!fox.isJumping, "soft landing ends jump")
+        check(fox.isJumping, "contact retains jump guard until settled")
         check(fox.positionY === fox.groundY && fox.velocityY === 0,
               "soft landing settles on ground")
+        for (var settle = 0; settle < Math.ceil(fox.contactDuration / 16); settle++) fox.physicsStep()
+        check(fox.movementPhase === "settling" && fox.landingSquash > 0.059,
+              "contact compresses into settling")
+        var compression = fox.landingSquash
+        for (var release = 0; release < Math.ceil(fox.settleDuration / 16); release++) {
+          fox.physicsStep()
+          check(fox.landingSquash <= compression, "settling releases monotonically")
+          check(fox.positionY === fox.groundY, "settling stays planted")
+          compression = fox.landingSquash
+        }
+        check(fox.movementPhase === "grounded" && !fox.isJumping && fox.landingSquash === 0,
+              "settling completes with neutral transform")
+
+        fox.positionY = fox.groundY - 450
+        fox.velocityY = 0
+        fox.petState = fox.stateIdle
+        var lastY = fox.positionY
+        var reachedCruise = false
+        var braked = false
+        for (var fall = 0; fall < 300 && fox.positionY < fox.groundY; fall++) {
+          var previousSpeed = fox.velocityY
+          fox.physicsStep()
+          check(fox.positionY >= lastY && fox.positionY <= fox.groundY,
+                "fall is monotonic and never penetrates floor")
+          check(fox.velocityY >= 0 && fox.velocityY <= fox.maxFallSpeed,
+                "fall speed is bounded")
+          reachedCruise = reachedCruise || fox.velocityY > fox.maxFallSpeed * 0.95
+          braked = braked || (previousSpeed > fox.velocityY && fox.positionY < fox.groundY)
+          lastY = fox.positionY
+        }
+        check(reachedCruise && braked && fox.movementPhase === "contact",
+              "tall fall cruises then brakes into contact")
+        for (var rest = 0; rest < Math.ceil((fox.contactDuration + fox.settleDuration) / 16); rest++) fox.physicsStep()
 
         fox.petState = fox.stateIdle
         fox.positionX = 200
-        fox.positionY = 300
+        fox.positionY = fox.groundY
         fox.velocityX = 0
         fox.velocityY = 0
         fox.jump()
         check(fox.isJumping && fox.petState === fox.statePlay,
               "jump enters play state")
         check(fox.velocityY === fox.jumpImpulse, "jump applies impulse")
+        check(fox.spriteSpec.row === fox.rows.idle.row && fox.spriteFrame === 0,
+              "rising holds the body pose used for landing")
         var jumpVelocity = fox.velocityY
         fox.jump()
         check(fox.velocityY === jumpVelocity, "second jump is ignored in flight")
+        for (var flight = 0; flight < 200 && fox.movementPhase !== "grounded"; flight++) {
+          fox.physicsStep()
+          if (fox.movementPhase === "falling")
+            check(fox.spriteFrame === 0, "descent holds upright landing pose")
+          if (fox.movementPhase === "contact" || fox.movementPhase === "settling")
+            check(fox.spriteState === fox.stateIdle && fox.spriteFrame === 0,
+                  "landing holds settled standing sprite")
+        }
+        check(!fox.isJumping && fox.petState === fox.stateIdle, "jump finishes through settling")
 
         fox.petState = fox.stateIdle
         fox.velocityX = -2
@@ -108,7 +158,43 @@ HARNESS = textwrap.dedent(
         check(fox.direction === -1 && fox.velocityX === -2,
               "walk preserves existing momentum direction")
         fox.setState(fox.stateIdle)
-        check(fox.velocityX === 0, "non-walk state stops horizontal movement")
+        check(fox.velocityX === -2, "non-walk state preserves momentum for braking")
+        for (var brake = 0; brake < 20; brake++) fox.physicsStep()
+        check(fox.velocityX === 0, "non-walk state smoothly stops")
+
+        fox.positionX = rightEdge - 20
+        fox.direction = 1
+        fox.setState(fox.stateWalk)
+        var turned = false
+        var oldVx = fox.velocityX
+        for (var walk = 0; walk < 120; walk++) {
+          fox.physicsStep()
+          check(Math.abs(fox.velocityX - oldVx) <= fox.horizontalAcceleration + 0.0001,
+                "walking and wall turns bound acceleration")
+          check(fox.positionX <= rightEdge, "wall turn remains in bounds")
+          turned = turned || fox.direction === -1
+          oldVx = fox.velocityX
+        }
+        check(turned && fox.velocityX < 0, "wall turn resumes inward walk")
+
+        fox.velocityX = 0
+        fox.setState(fox.stateIdle)
+        fox.animationStep(450)
+        check(fox.frameIndex === 0 && closeEnough(fox.animationElapsed, 450),
+              "idle holds its stable body pose between blinks")
+        fox.setState(fox.stateGreet)
+        fox.animationStep(100)
+        fox.animationStep(150)
+        check(fox.frameIndex === 2, "animation accepts partitioned elapsed time")
+        fox.setState(fox.stateGreet)
+        fox.animationStep(250)
+        check(fox.frameIndex === 2, "animation partitions produce identical frame")
+        var frame = fox.frameIndex
+        for (var tick = 0; tick < 10; tick++) fox.physicsStep()
+        check(fox.frameIndex === frame, "physics does not advance sprite clock")
+        fox.setState(fox.stateIdle)
+        fox.animationStep(3890)
+        check(fox.spriteFrame === 0, "blink cycle returns to standing pose")
 
         fox.enabled = true
         fox.petState = fox.stateWalk
@@ -129,6 +215,17 @@ HARNESS = textwrap.dedent(
         fox.settleDrop(500)
         check(fox.petState === fox.stateSleep && fox.manualSleep,
               "sleeping drop preserves sleep")
+        for (var sleepingFall = 0; sleepingFall < 300; sleepingFall++) fox.physicsStep()
+        check(fox.spriteState === fox.stateSleep && fox.landingSquash === 0
+              && fox.positionY === fox.groundY, "sleeping drop settles without waking or deforming")
+        fox.sleepNow()
+        check(fox.movementPhase === "grounded" && !fox.isJumping,
+              "explicit sleep clears transient movement")
+        fox.manualSleep = false
+        fox.jump()
+        fox.resetPosition()
+        check(fox.movementPhase === "grounded" && fox.landingSquash === 0,
+              "reset clears transient movement")
 
         fox.disable()
         console.log("HARNESS_DONE")
@@ -157,7 +254,11 @@ class TestQmlMovement(unittest.TestCase):
                 "import QtQml\nQtObject {}\n", encoding="utf-8"
             )
             harness_path = temp_root / "MovementHarness.qml"
-            harness_path.write_text(HARNESS, encoding="utf-8")
+            harness_path.write_text(
+                HARNESS.replace("__PET_META__", json.dumps(
+                    (repo_root / "assets/pet.json").read_text(encoding="utf-8")
+                )), encoding="utf-8"
+            )
 
             env = os.environ.copy()
             env["HOME"] = str(temp_root)

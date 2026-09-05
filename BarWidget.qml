@@ -114,7 +114,7 @@ BarWidget {
   // the user toggles via IPC from elsewhere). The widget's local
   // `settings` is reactive — this is a no-op safety net for cold starts
   // and IPC round-trips.
-  onSettingsChanged: {
+  function syncSettings() {
     if (!serviceRef) return
     var wantEnabled = setting("enabled", false)
     if (serviceRef.enabled !== wantEnabled) {
@@ -133,6 +133,16 @@ BarWidget {
     var followValue = setting("followCursor", true)
     if (typeof followValue === "boolean" && followValue !== serviceRef.followCursor)
       serviceRef.followCursor = followValue
+  }
+
+  onSettingsChanged: syncSettings()
+  onServiceRefChanged: {
+    // A rescan replaces the service after this widget's settings have
+    // already arrived. Apply them to the new instance and restore visibility.
+    syncSettings()
+    var shell = root.bar && root.bar.shell ? root.bar.shell : null
+    if (serviceRef && setting("enabled", false) && shell && typeof shell.summon === "function")
+      shell.summon(root.moduleName, "{}")
   }
 
   // ---------------------------------------------------------- IPC

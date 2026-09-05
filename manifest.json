@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "fox-pet",
   "name": "Fox Pet",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "author": "User",
   "license": "MIT",
   "description": "A playful fox that wanders, blinks, naps, and reacts to clicks and drags.",

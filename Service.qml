@@ -26,7 +26,7 @@ Item {
   readonly property string pluginDir: home + "/.config/omarchy/plugins/fox-pet"
   readonly property string stateDir: home + "/.local/state/omarchy/fox-pet"
   readonly property string statePath: stateDir + "/state.json"
-  readonly property string petMetaPath: pluginDir + "/assets/pet.json"
+  readonly property url petMetaPath: Qt.resolvedUrl("assets/pet.json")
 
   // ---------------------------------------------------------- sprite grid
   //
@@ -65,20 +65,19 @@ Item {
 
   // Row index in the sprite grid for each state. The default table is for
   // the stock spritesheet; petMetaLoader replaces it once pet.json is read.
-  // Frames within a row cycle at `fps` Hz — frames per state is encoded
-  // below. Some states (greet, yawn) only have a few useful frames before
-  // the motion repeats; the others have 8 and loop continuously.
+  // Frames within a row cycle at `fps` Hz. Counts exclude empty trailing
+  // cells; airborne and landing phases hold a pose instead of looping.
   readonly property var defaultRows: ({
-    "idle":       { row: 0, frames: 8, fps: 5 },
+    "idle":       { row: 0, frames: 7, fps: 5, sequence: [0, 1, 2, 1], durations: [3600, 90, 110, 90] },
     "walk":       { row: 1, frames: 8, fps: 8 },
     "sitRight":   { row: 1, frames: 8, fps: 4 },
     "sitLeft":    { row: 2, frames: 8, fps: 4 },
     "greet":      { row: 3, frames: 4, fps: 8 },
-    "yawn":       { row: 4, frames: 4, fps: 4 },
+    "yawn":       { row: 4, frames: 5, fps: 3 },
     "sleep":      { row: 5, frames: 8, fps: 5 },
-    "play":       { row: 6, frames: 8, fps: 8 },
-    "think":      { row: 7, frames: 8, fps: 5 },
-    "alert":      { row: 8, frames: 8, fps: 6 },
+    "play":       { row: 6, frames: 6, fps: 8 },
+    "think":      { row: 7, frames: 6, fps: 5 },
+    "alert":      { row: 8, frames: 6, fps: 6 },
     "spin":       { row: 9, frames: 8, fps: 10 },
     "somersault": { row: 10, frames: 8, fps: 5 }
   })
@@ -120,14 +119,59 @@ Item {
 
   // Tunable knobs. Reasonable defaults — the AI isn't aggressive and the
   // physics is gentle so it reads as a calm companion, not a pinball.
-  readonly property real gravity: 0.45
+  readonly property real gravity: 0.16
   readonly property real bounce: 0.30
-  readonly property real walkSpeed: 1.6
-  readonly property real jumpImpulse: -10.5
+  readonly property real walkSpeed: 1.05
+  readonly property real jumpImpulse: -6.0
   // A small grace period at the edge of a screen so the fox doesn't reverse
   // direction with a single px of overhang.
   readonly property int edgeMargin: 4
   property bool isJumping: false
+  // Transient movement phases supplement the public action state. Contact
+  // and release durations describe the squash motion, not an AI delay.
+  property string movementPhase: "grounded"
+  property real contactAge: 0
+  readonly property real contactDuration: 120
+  readonly property real settleDuration: 360
+  readonly property real horizontalAcceleration: 0.12
+  readonly property real landingBraking: 0.075
+  readonly property real maxFallSpeed: 3.2
+  property string sleepTransition: ""
+  readonly property real landingSquash: {
+    if (manualSleep || isDragging) return 0
+    if (movementPhase === "contact")
+      return 0.03 * (1 - Math.cos(Math.min(1, contactAge / contactDuration) * Math.PI))
+    if (movementPhase === "settling") {
+      var t = Math.min(1, (contactAge - contactDuration) / settleDuration)
+      return 0.06 * (1 - t * t * (3 - 2 * t))
+    }
+    return 0
+  }
+  // Keep the same front-facing body through suspension and landing. The
+  // leap row is a poor falling pose and causes a silhouette pop on contact.
+  readonly property string spriteState: isDragging ? (manualSleep ? stateSleep : stateIdle)
+    : movementPhase !== "grounded" ? (manualSleep && sleepTransition !== "curl" ? stateSleep : stateIdle)
+    : sleepTransition !== "" ? stateYawn
+    : manualSleep ? stateSleep
+    : Math.abs(velocityX) > 0.01 ? stateWalk : petState
+  readonly property var spriteSpec: rows[spriteState] || rows[stateIdle]
+  readonly property int spriteFrame: {
+    if (isDragging || movementPhase !== "grounded"
+        || spriteState === stateSitLeft || spriteState === stateSitRight) return 0
+    if (sleepTransition !== "") {
+      var curl = [2, 1, 0, 4]
+      var wake = [4, 0, 1, 2]
+      return Math.min(spriteSpec.frames - 1, (sleepTransition === "curl" ? curl : wake)[Math.min(3, frameIndex)])
+    }
+    if (spriteState === stateWalk && Math.abs(velocityX) < walkSpeed * 0.25) return 0
+    return spriteSpec.sequence ? spriteSpec.sequence[frameIndex % spriteSpec.sequence.length] : frameIndex % spriteSpec.frames
+  }
+  // The crouching and curled cells have extra bottom padding. Align paws,
+  // not the image rectangle, with the common ground contact at pixel 203.
+  readonly property real spriteOffsetY: spriteState === stateSleep ? 9
+    : spriteState === stateYawn ? [15, 0, 0, 0, 14][spriteFrame] || 0 : 0
+  property real animationElapsed: 0
+  onSpriteStateChanged: { frameIndex = 0; animationElapsed = 0; animTimer.lastTick = Date.now() }
 
   // True while the user is dragging the fox around. The AI pauses so it
   // doesn't fight the user for control.
@@ -319,29 +363,29 @@ Item {
     // motion profile (velocity, direction) is only set when the state
     // actually changes so a re-entry doesn't reset a walk in progress.
     var changed = petState !== next
+    var waking = petState === stateSleep && next !== stateSleep
     petState = next
+    if (changed) sleepTransition = next === stateSleep ? "curl" : waking ? "wake" : ""
     if (changed || next === stateGreet || next === statePlay || next === stateSpin || next === stateSomersault) {
       frameIndex = 0
+      animationElapsed = 0
+      animTimer.lastTick = Date.now()
     }
     if (!changed) return
-    // Each state resets its own motion profile. Walking is the only state
-    // that sets a non-zero velocityX; everything else sits still.
+    // Actions choose the target; physics eases existing momentum toward it.
     if (next === stateWalk) {
       // Pick a direction unless the fox was already heading somewhere.
       if (velocityX === 0) {
         direction = (direction === 1 || direction === -1) ? direction : (Math.random() > 0.5 ? 1 : -1)
-        velocityX = walkSpeed * direction
       } else {
         direction = velocityX >= 0 ? 1 : -1
       }
-    } else {
-      velocityX = 0
     }
     // Greet/play/yawn/sleep/somersault pose always faces forward (their
     // frames are drawn right-facing). For other poses, facing tracks
     // the last direction the fox was moving so it doesn't snap.
-    if (next === stateGreet || next === statePlay || next === stateSleep
-        || next === stateYawn || next === stateSomersault || next === stateSpin || next === stateThink) direction = 1
+    if (Math.abs(velocityX) < 0.01 && (next === stateGreet || next === statePlay || next === stateSleep
+        || next === stateYawn || next === stateSomersault || next === stateSpin || next === stateThink)) direction = 1
   }
 
   function startAction(action, ms) {
@@ -354,14 +398,11 @@ Item {
     } else {
       actionTimer.stop()
     }
-    // Restart the frame anim timer at the cadence for this pose so the
-    // first frame shows for the full duration.
-    animTimer.interval = animTimer.cadenceFor()
-    animTimer.restart()
+    if (enabled && !animTimer.running) animTimer.start()
   }
 
   function pickNextAction() {
-    if (isDragging) return
+    if (isDragging || isJumping || movementPhase !== "grounded") return
     // If manual sleep is active, stay asleep until user interacts.
     if (petState === stateSleep && manualSleep) return
 
@@ -417,8 +458,7 @@ Item {
       var rightMargin = g.width - cellWidth * scale - edgeMargin
       if (positionX <= leftMargin) direction = 1
       else if (positionX >= rightMargin) direction = -1
-      else direction = Math.random() > 0.5 ? 1 : -1
-      velocityX = walkSpeed * direction
+      else if (petState !== stateWalk) direction = Math.random() > 0.5 ? 1 : -1
       // Re-arm the greet chain so the next time the user clicks the fox
       // gets a clean shot at two greets in a row.
       greetChainLeft = 1
@@ -444,12 +484,13 @@ Item {
   function jump() {
     if (isJumping) return
     isJumping = true
+    movementPhase = "rising"
+    contactAge = 0
     velocityY = jumpImpulse
     setState(statePlay)
-    // Let the play animation finish, then return to idle so the fox
-    // doesn't strand itself in the play pose.
-    actionTimer.interval = 700
-    actionTimer.restart()
+    // Contact and settling complete the jump; an action timeout must not
+    // switch poses halfway through flight.
+    actionTimer.stop()
     pendingAction = stateIdle
   }
 
@@ -459,7 +500,9 @@ Item {
     if (!enabled) return
     isDragging = false
     isJumping = false
+    contactAge = 0
     velocityX = 0
+    actionTimer.stop()
     var ground = groundYHint
     if (typeof ground !== "number" || !isFinite(ground)) {
       var g = screenGeometry(currentScreen())
@@ -475,16 +518,29 @@ Item {
       // Released in mid-air: initial fall velocity is zero for a gentle descent
       velocityY = 0
     }
+    movementPhase = physicsEnabled && positionY < ground ? "falling" : "grounded"
     if (manualSleep || petState === stateSleep) {
       manualSleep = true
       setState(stateSleep)
       actionTimer.stop()
     } else {
       setState(stateIdle)
-      actionTimer.interval = 3000
-      actionTimer.restart()
+      if (movementPhase === "grounded") startAction(stateIdle, durationFor(stateIdle))
     }
     saveDebounce.restart()
+  }
+
+  function beginDrag() {
+    if (petState === stateSleep) manualSleep = true
+    isDragging = true
+    actionTimer.stop()
+    pointerGlanceTimer.stop()
+    velocityX = 0
+    velocityY = 0
+    isJumping = false
+    contactAge = 0
+    movementPhase = "grounded"
+    if (!manualSleep && petState !== stateSleep) setState(stateIdle)
   }
 
   function resetPosition() {
@@ -507,6 +563,8 @@ Item {
     velocityX = 0
     velocityY = 0
     isJumping = false
+    movementPhase = "grounded"
+    contactAge = 0
   }
 
   function cursorAbsolute() {
@@ -538,67 +596,119 @@ Item {
     }
   }
 
-  // Frame advance. Recreated on each state change because the interval
-  // differs per pose (sleep is slow, walk is fast).
+  // Elapsed time advances frames independently of physics. Delayed timer
+  // callbacks retain the remainder and catch up instead of slowing the pose.
   Timer {
     id: animTimer
+    interval: cadenceFor()
     repeat: true
+    property real lastTick: 0
+    onRunningChanged: lastTick = Date.now()
     onTriggered: {
-      var spec = service.rows[service.petState] || service.rows[service.stateIdle]
-      service.frameIndex = (service.frameIndex + 1) % spec.frames
+      var now = Date.now()
+      service.animationStep(Math.max(0, now - lastTick))
+      lastTick = now
     }
     function cadenceFor() {
-      var spec = service.rows[service.petState] || service.rows[service.stateIdle]
+      var spec = service.spriteSpec
+      if (service.sleepTransition !== "" || spec.durations) return 50
       return Math.max(60, Math.round(1000 / spec.fps))
     }
   }
 
-  // One deterministic movement step. Keeping the simulation step separate
-  // from its timer makes the physics easy to exercise without waiting on
-  // wall-clock time, while the live timer remains the production scheduler.
-  function physicsStep() {
+  function animationStep(elapsedMs) {
+    if (!(elapsedMs > 0) || !isFinite(elapsedMs)) return
+    if (isDragging || movementPhase !== "grounded") return
+    var spec = spriteSpec
+    if (sleepTransition !== "") {
+      var transitionElapsed = animationElapsed + elapsedMs
+      var advance = Math.floor(transitionElapsed / 240)
+      animationElapsed = transitionElapsed % 240
+      if (frameIndex + advance < 4) frameIndex += advance
+      else {
+        var wasWaking = sleepTransition === "wake"
+        sleepTransition = ""
+        frameIndex = 0
+        animationElapsed = 0
+        if (wasWaking) startAction(stateIdle, durationFor(stateIdle))
+      }
+      return
+    }
+    if (spec.durations && spec.sequence) {
+      var total = 0
+      for (var i = 0; i < spec.durations.length; i++) total += spec.durations[i]
+      var remaining = animationElapsed + elapsedMs % total
+      var slot = frameIndex % spec.sequence.length
+      while (remaining >= spec.durations[slot]) {
+        remaining -= spec.durations[slot]
+        slot = (slot + 1) % spec.sequence.length
+      }
+      animationElapsed = remaining
+      if (slot !== frameIndex) frameIndex = slot
+      return
+    }
+    if (spriteState === stateSitLeft || spriteState === stateSitRight) return
+    if (spriteState === stateWalk) elapsedMs *= Math.min(1, Math.abs(velocityX) / walkSpeed)
+    var frameMs = 1000 / spec.fps
+    var elapsed = animationElapsed + elapsedMs
+    var frames = Math.floor((elapsed + 0.000001) / frameMs)
+    animationElapsed = elapsed - frames * frameMs
+    if (frames) frameIndex = (frameIndex + frames) % spec.frames
+  }
+
+  // Velocities retain their public px/16ms units. Integrate against the
+  // display's frame time so high-refresh screens don't show repeated steps.
+  function physicsStep(elapsedMs) {
+    var dt = Math.min(32, Math.max(1, elapsedMs === undefined ? 16 : elapsedMs)) / 16
     var g = service.screenGeometry(service.currentScreen())
     var scaledHeight = service.cellHeight * service.scale
     var ground = Math.round(g.height - scaledHeight - service.groundMargin)
 
-    // Gravity applies when above the ground; landing softens the
-    // vertical velocity. isJumping stays true until the fox has come
-    // to rest on the ground, then the AI picks the next action.
-    if (service.positionY < ground) {
-      service.velocityY += service.gravity
-    } else if (service.velocityY > 0) {
-      if (service.velocityY > 2.5) {
-        service.velocityY = -service.velocityY * service.bounce
-        service.positionY = ground
-      } else {
-        service.velocityY = 0
-        service.positionY = ground
-        if (service.isJumping) {
-          service.isJumping = false
-          service.pickNextAction()
-        }
+    var left = edgeMargin
+    var right = Math.max(left, g.width - cellWidth * scale - edgeMargin)
+    var distance = Math.max(0, direction > 0 ? right - positionX : positionX - left)
+    var acceleration = horizontalAcceleration * dt
+    // Include the next discrete step in the stopping distance so braking
+    // reaches the wall at rest, without a final velocity discontinuity.
+    var target = petState === stateWalk && movementPhase === "grounded" && positionY >= ground
+      ? direction * Math.min(walkSpeed,
+          Math.sqrt(acceleration * acceleration + 2 * horizontalAcceleration * distance) - acceleration) : 0
+    var vx = velocityX + Math.max(-acceleration, Math.min(acceleration, target - velocityX))
+    var x = Math.max(left, Math.min(right, positionX + vx * dt))
+    if (x - left < 0.001) x = left
+    if (right - x < 0.001) x = right
+    if ((x <= left && direction < 0) || (x >= right && direction > 0)) {
+      direction = -direction
+      vx = 0
+    }
+    if (velocityX !== vx) velocityX = vx
+    if (positionX !== x) positionX = x
+
+    if (positionY < ground || velocityY < 0) {
+      var vy = velocityY + gravity * dt
+      if (vy > 0) {
+        // A stopping-distance envelope eases descent to a subpixel contact.
+        var approachSpeed = Math.sqrt(2 * landingBraking * Math.max(0, ground - positionY))
+        vy = Math.min(vy, maxFallSpeed * Math.tanh(approachSpeed / maxFallSpeed))
       }
+      velocityY = vy
+      movementPhase = vy < 0 ? "rising" : "falling"
+      positionY = Math.min(ground, positionY + vy * dt)
     }
-
-    service.positionX += service.velocityX
-    service.positionY += service.velocityY
-
-    // Wall bounce reverses the fox's direction. We also re-orient the
-    // facing so the sprite flips. Use a soft edge margin so the fox
-    // doesn't bounce off the screen the instant it touches the wall.
-    var scaledWidth = service.cellWidth * service.scale
-    if (service.positionX <= service.edgeMargin) {
-      service.positionX = service.edgeMargin
-      service.direction = 1
-      service.velocityX = service.walkSpeed
-    } else if (service.positionX >= g.width - scaledWidth - service.edgeMargin) {
-      service.positionX = Math.max(service.edgeMargin, g.width - scaledWidth - service.edgeMargin)
-      service.direction = -1
-      service.velocityX = -service.walkSpeed
-    }
-
-    // Keep velocityY sane; very tall screens shouldn't accumulate.
-    if (service.velocityY > 18) service.velocityY = 18
+    if (positionY >= ground && (velocityY > 0 || movementPhase === "falling" || movementPhase === "rising")) {
+      positionY = ground
+      velocityY = 0
+      contactAge = 0
+      movementPhase = "contact"
+    } else if (movementPhase === "contact" || movementPhase === "settling") {
+      contactAge += dt * 16
+      if (contactAge >= contactDuration + settleDuration) {
+        movementPhase = "grounded"
+        isJumping = false
+        if (petState === statePlay) setState(stateIdle)
+        if (!manualSleep && !actionTimer.running) startAction(petState, durationFor(petState))
+      } else if (contactAge >= contactDuration) movementPhase = "settling"
+    } else if (positionY > ground) positionY = ground
 
     // Cross-screen detection. Runs after the position update so a drag
     // or walk that crosses a monitor edge updates currentScreenIndex
@@ -606,15 +716,11 @@ Item {
     if (service._resyncSuppress === 0) service.resyncScreen()
   }
 
-  // Physics + AI tick at ~60Hz. Movement is small enough per step that
-  // the fox never tunnels through the floor even at the highest gravity
-  // impulse. Disabled while the user is dragging the fox around.
-  Timer {
+  // Movement follows presentation cadence; sprite poses keep their own clock.
+  FrameAnimation {
     id: physicsTimer
-    interval: 16
-    repeat: true
     running: service.enabled && service.physicsEnabled && !service.isDragging
-    onTriggered: service.physicsStep()
+    onTriggered: service.physicsStep(frameTime * 1000)
   }
 
   // React to the cursor being near the fox.
@@ -677,7 +783,6 @@ Item {
 
   function enable() {
     enabled = true
-    animTimer.interval = animTimer.cadenceFor()
     animTimer.restart()
     // Kick off the first AI decision immediately if nothing is pending.
     if (!actionTimer.running) pickNextAction()
@@ -692,6 +797,8 @@ Item {
     velocityX = 0
     velocityY = 0
     isJumping = false
+    movementPhase = "grounded"
+    contactAge = 0
     pointerNear = false
     // Force a final flush so the next launch lands where the user left it.
     saveState()
@@ -733,12 +840,14 @@ Item {
   }
 
   function sleepNow() {
-    // Explicit manual sleep: settles firmly on the ground plane and sleeps peacefully.
+    // Float down first when airborne, then curl up through the crouch poses.
     recomputeGround()
-    positionY = groundY
+    if (positionY > groundY) positionY = groundY
     velocityY = 0
     velocityX = 0
     isJumping = false
+    movementPhase = physicsEnabled && positionY < groundY ? "falling" : "grounded"
+    contactAge = 0
     manualSleep = true
     startAction(stateSleep, 0)
     saveDebounce.restart()
@@ -918,7 +1027,6 @@ Item {
         }
       }
       petMetaLoaded = true
-      animTimer.interval = animTimer.cadenceFor()
     } catch (e) {
       console.warn("fox-pet: pet.json unreadable, using defaults:", e)
     }
@@ -934,10 +1042,6 @@ Item {
       service.loadState()
     }
   }
-
-  // AnimTimer interval has to track the current state's fps, so the
-  // service rebinds it on every state change.
-  onPetStateChanged: animTimer.interval = animTimer.cadenceFor()
 
   // ---------------------------------------------------- IPC
   //
@@ -958,6 +1062,10 @@ Item {
 
     function info(): string {
       return JSON.stringify(service.snapshotState())
+    }
+
+    function build(): string {
+      return JSON.stringify({ version: "2.2.0", source: Qt.resolvedUrl("Service.qml") })
     }
 
     function enable(): string { service.enable(); return "on" }

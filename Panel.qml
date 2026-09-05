@@ -61,11 +61,10 @@ Item {
   //
   // The spritesheet is laid out as `columns` cells per row, each
   // `cellWidth × cellHeight`. The service tells us which row (state)
-  // and which frame within the row. We turn those into a clipping
-  // rectangle inside the source image.
+  // and which frame within the row. We translate the cached sheet under
+  // a cell-sized viewport, keeping source and texture size unchanged.
   //
-  // sourceSize is set to the full sheet so sourceClipRect (which lives
-  // in source pixel coordinates) maps cell-for-cell to the cell grid.
+  // sourceSize keeps the full sheet at native resolution.
   readonly property real scale: service ? service.scale : 1.0
   readonly property int columns: service ? service.columns : 8
   readonly property int cellWidth: service ? service.cellWidth : 192
@@ -79,11 +78,11 @@ Item {
   readonly property real shadowFade: Math.max(0.3, 1.0 - altitude / 450.0)
 
   readonly property var rowSpec: service && service.rows
-    ? service.rows[service.petState] || service.rows[service.stateIdle]
+    ? service.spriteSpec
     : { row: 0, frames: 8, fps: 5 }
   readonly property int frameRow: rowSpec.row
   readonly property int frameCount: rowSpec.frames
-  readonly property int frameCol: service ? service.frameIndex % frameCount : 0
+  readonly property int frameCol: service ? service.spriteFrame : 0
   readonly property int frameX: frameCol * cellWidth
   readonly property int frameY: frameRow * cellHeight
 
@@ -94,7 +93,7 @@ Item {
   // Direction mirrors the sprite horizontally. The flipper's transform
   // list does ONLY a horizontal mirror — never a vertical one — so
   // `scale: -1` doesn't accidentally flip the fox upside-down.
-  readonly property real facingScale: service && service.direction === -1 ? -1 : 1
+  readonly property real facingScale: service && service.spriteState === service.stateWalk && service.direction === -1 ? -1 : 1
 
   // Dedicated curled-up sleep sprite in row 5 requires no synthetic tilt or shrink.
   readonly property bool isSleeping: service && service.petState === service.stateSleep
@@ -241,11 +240,11 @@ Item {
         id: dragProxy
         Binding on x {
           when: !foxHit.drag.active
-          value: Math.round(root.serviceX)
+          value: root.serviceX
         }
         Binding on y {
           when: !foxHit.drag.active
-          value: Math.round(root.serviceY)
+          value: root.serviceY
         }
         width: root.scaledCellWidth
         height: root.scaledCellHeight
@@ -261,35 +260,28 @@ Item {
           }
         }
 
-        // Fox sprite. Pixel-rounded integer coordinates prevent bilinear
-        // texture blur and shimmering while walking.
-        Item {
+        // Fractional positions preserve slow easing; the cached sheet is
+        // translated under a fixed viewport instead of reloading source crops.
+        SpriteView {
           id: fox
           anchors.fill: parent
-          clip: true
-
-          Item {
-            id: flipper
-            anchors.fill: parent
-            transformOrigin: Item.Bottom
-            rotation: root.sleepTilt
-            scale: root.sleepScale
-
-            Image {
-              id: sprite
-              anchors.fill: parent
-              source: root.spriteUrl
-              fillMode: Image.Stretch
-              smooth: true
-              mipmap: false
-              asynchronous: false
-              cache: true
-              mirror: root.facingScale === -1
-              sourceClipRect: Qt.rect(root.frameX, root.frameY, root.cellWidth, root.cellHeight)
-              sourceSize: Qt.size(root.cellWidth * root.columns,
-                                  root.cellHeight * root.rowCount)
-            }
-          }
+          source: root.spriteUrl
+          columns: root.columns
+          rowCount: root.rowCount
+          cellWidth: root.cellWidth
+          cellHeight: root.cellHeight
+          frameRow: root.frameRow
+          frameCol: root.frameCol
+          frameOffsetY: root.service ? root.service.spriteOffsetY : 0
+          facing: root.facingScale
+          squash: root.service ? root.service.landingSquash : 0
+          suspended: root.service && (root.service.movementPhase === "falling" || root.service.movementPhase === "rising")
+          sleeping: root.isSleeping
+          softenFrames: root.service && root.service.spriteState === root.service.stateYawn
+          breathing: root.service && root.service.movementPhase === "grounded"
+            && (root.service.spriteState === root.service.stateIdle || root.service.spriteState === root.service.stateSleep)
+          active: panel.visible
+          dragging: root.service && root.service.isDragging
         }
 
         // Responsive click + drag surface. Fills dragProxy to make the entire fox body
@@ -308,25 +300,18 @@ Item {
           drag.minimumX: 0
           drag.maximumX: panel.width - root.scaledCellWidth
           drag.minimumY: 0
-          drag.maximumY: panel.height - root.scaledCellHeight
+          // Keep the paws above the ground plane during the grab as well,
+          // so release never snaps her upward out of the bottom inset.
+          drag.maximumY: Math.max(0, root.service ? root.service.groundY : panel.height - root.scaledCellHeight)
 
           // Gesture state tracking
-          property real lastDragX: 0
-          property real dragVelocityX: 0
           property real lastStrokeX: 0
           property int strokeReversals: 0
           property real lastStrokeTime: 0
 
           drag.onActiveChanged: {
             if (!root.service) return
-            root.service.isDragging = drag.active
             if (!drag.active) {
-              // Kinetic toss/fling gesture: impart horizontal momentum on quick release (awake only)
-              var isAsleep = root.service.manualSleep || root.service.petState === root.service.stateSleep
-              if (!isAsleep && Math.abs(dragVelocityX) > 2.5) {
-                root.service.velocityX = Math.max(-10, Math.min(10, dragVelocityX * 0.75))
-                root.service.direction = dragVelocityX > 0 ? 1 : -1
-              }
               // Check if dropped onto another monitor at release time
               var abs = root.service.toAbsolute(dragProxy.x, dragProxy.y)
               var at = root.service.screenAt(abs.x, abs.y)
@@ -343,28 +328,17 @@ Item {
                 : 0
               root.service.settleDrop(g)
             } else {
-              lastDragX = dragProxy.x
-              dragVelocityX = 0
+              root.service.beginDrag()
             }
           }
 
           onCanceled: {
-            if (root.service) root.service.isDragging = false
-          }
-
-          onPressed: function(mouse) {
-            lastDragX = dragProxy.x
-            dragVelocityX = 0
+            if (root.service && root.service.isDragging) root.service.settleDrop()
           }
 
           onPositionChanged: function(mouse) {
             if (!root.service) return
-            // Calculate drag speed for toss gesture
-            if (drag.active) {
-              dragVelocityX = dragProxy.x - lastDragX
-              lastDragX = dragProxy.x
-              return
-            }
+            if (drag.active) return
 
             // Petting / stroking gesture detection (rubbing cursor horizontally across the fox)
             var now = Date.now()
