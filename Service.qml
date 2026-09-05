@@ -200,8 +200,10 @@ Item {
   //
   // Procedural in-betweens and perspective turnarounds.
   // Instead of linearly scaling xScale through zero (which flips the 2D sprite
-  // like a paper coin), turns cycle through Row 9's authentic rotational frames
-  // (3/4 right -> slight right -> front -> slight left -> 3/4 left).
+  // like a paper coin), turns cycle through Row 9 rotational frames:
+  // side -> quarter -> front -> mirrored quarter -> mirrored side.
+  // Cadence matches the spin row (10fps). A direction change mid-yaw
+  // reverses the remaining arc instead of restarting from profile.
   property int visualDirection: 1
   property int turnStep: -1
   property int turnFromDir: 1
@@ -209,6 +211,7 @@ Item {
   property real speedMix: 0
   property real tiltDeg: 0
   readonly property real strideLength: 24.0
+  readonly property int turnStepMs: 100
 
   function triggerTurn() {
     if (!enabled || isDragging || movementPhase !== "grounded" || petState === stateSleep) {
@@ -218,6 +221,13 @@ Item {
       return
     }
     if (direction === visualDirection && turnStep === -1) return
+    if (turnStep >= 0) {
+      if (turnFromDir === direction) {
+        turnFromDir = -turnFromDir
+        turnStep = 4 - turnStep
+      }
+      return
+    }
     turnFromDir = visualDirection
     turnStep = 0
     turnTimer.restart()
@@ -227,7 +237,7 @@ Item {
 
   Timer {
     id: turnTimer
-    interval: 36
+    interval: service.turnStepMs
     repeat: true
     onTriggered: {
       if (service.turnStep >= 0 && service.turnStep < 4) {
@@ -786,7 +796,7 @@ Item {
     var acceleration = horizontalAcceleration * dt
     // Include the next discrete step in the stopping distance so braking
     // reaches the wall at rest, without a final velocity discontinuity.
-    var target = petState === stateWalk && sitTransition === "" && movementPhase === "grounded" && positionY >= ground
+    var target = petState === stateWalk && sitTransition === "" && turnStep === -1 && movementPhase === "grounded" && positionY >= ground
       ? direction * Math.min(walkSpeed,
           Math.sqrt(acceleration * acceleration + 2 * horizontalAcceleration * distance) - acceleration) : 0
     var vx = velocityX + Math.max(-acceleration, Math.min(acceleration, target - velocityX))

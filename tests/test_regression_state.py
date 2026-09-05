@@ -7,6 +7,7 @@ drop physics, and persistence schema.
 
 import json
 import os
+import re
 import unittest
 
 
@@ -459,6 +460,89 @@ class TestFoxPetRegression(unittest.TestCase):
         self.assertAlmostEqual(compute_release_velocity(6.0, False), 4.5)
         # Fast drag release while asleep -> zero velocity (no fling, stays asleep)
         self.assertAlmostEqual(compute_release_velocity(6.0, True), 0.0)
+
+    def _turn_timer_interval_ms(self):
+        with open(os.path.join(self.repo_root, "Service.qml"), "r", encoding="utf-8") as f:
+            src = f.read()
+        named = re.search(r"turnStepMs:\s*(\d+)", src)
+        if named:
+            return int(named.group(1)), src
+        raw = re.search(r"id:\s*turnTimer\s+interval:\s*(\d+)", src)
+        self.assertIsNotNone(raw, "turnTimer interval not found")
+        return int(raw.group(1)), src
+
+    def test_turnaround_cadence_is_readable(self):
+        # 5 yaw poses at 36ms is a 180ms head whip. Match the spin row (~10fps)
+        # so a 180° turn reads as a turn, not a flicker.
+        interval_ms, src = self._turn_timer_interval_ms()
+        self.assertGreaterEqual(interval_ms, 90, "turn step is a head whip")
+        self.assertGreaterEqual(interval_ms * 5, 450, "full yaw finishes before it can be read")
+        self.assertIn("sitTransition === \"\" && turnStep === -1 && movementPhase", src)
+
+    def test_mid_turn_reverse_does_not_restart(self):
+        _, src = self._turn_timer_interval_ms()
+        self.assertRegex(src, r"turnStep\s*=\s*4\s*-\s*turnStep")
+
+        fox = _TurnMachine()
+        fox.set_direction(-1)
+        fox.tick()
+        fox.tick()
+        before = fox.pose()
+        self.assertEqual(before, (0, 1), "step 2 is the unflipped front cell")
+        fox.set_direction(1)
+        self.assertEqual(fox.pose(), before, "canceling a yaw must not snap back to profile")
+        while fox.turn_step >= 0:
+            fox.tick()
+        self.assertEqual(fox.visual_direction, 1)
+        self.assertEqual(fox.turn_step, -1)
+
+
+class _TurnMachine:
+    """Mirrors Service.qml yaw: 5 poses, reverse in place, no restart from 0."""
+
+    FRAMES = [2, 1, 0, 1, 2]
+
+    def __init__(self):
+        self.direction = 1
+        self.visual_direction = 1
+        self.turn_step = -1
+        self.turn_from_dir = 1
+
+    def facing(self):
+        if self.turn_step < 0:
+            return -1 if self.direction == -1 else 1
+        if self.turn_from_dir == 1:
+            return -1 if self.turn_step > 2 else 1
+        return -1 if self.turn_step < 2 else 1
+
+    def pose(self):
+        if self.turn_step < 0:
+            return (None, self.facing())
+        return (self.FRAMES[self.turn_step], self.facing())
+
+    def trigger(self):
+        if self.direction == self.visual_direction and self.turn_step == -1:
+            return
+        if self.turn_step >= 0:
+            if self.turn_from_dir == self.direction:
+                self.turn_from_dir = -self.turn_from_dir
+                self.turn_step = 4 - self.turn_step
+            return
+        self.turn_from_dir = self.visual_direction
+        self.turn_step = 0
+
+    def tick(self):
+        if 0 <= self.turn_step < 4:
+            self.turn_step += 1
+        else:
+            self.turn_step = -1
+            self.visual_direction = self.direction
+
+    def set_direction(self, direction):
+        if direction == self.direction:
+            return
+        self.direction = direction
+        self.trigger()
 
 
 if __name__ == "__main__":
