@@ -553,6 +553,59 @@ Item {
     }
   }
 
+  // One deterministic movement step. Keeping the simulation step separate
+  // from its timer makes the physics easy to exercise without waiting on
+  // wall-clock time, while the live timer remains the production scheduler.
+  function physicsStep() {
+    var g = service.screenGeometry(service.currentScreen())
+    var scaledHeight = service.cellHeight * service.scale
+    var ground = Math.round(g.height - scaledHeight - service.groundMargin)
+
+    // Gravity applies when above the ground; landing softens the
+    // vertical velocity. isJumping stays true until the fox has come
+    // to rest on the ground, then the AI picks the next action.
+    if (service.positionY < ground) {
+      service.velocityY += service.gravity
+    } else if (service.velocityY > 0) {
+      if (service.velocityY > 2.5) {
+        service.velocityY = -service.velocityY * service.bounce
+        service.positionY = ground
+      } else {
+        service.velocityY = 0
+        service.positionY = ground
+        if (service.isJumping) {
+          service.isJumping = false
+          service.pickNextAction()
+        }
+      }
+    }
+
+    service.positionX += service.velocityX
+    service.positionY += service.velocityY
+
+    // Wall bounce reverses the fox's direction. We also re-orient the
+    // facing so the sprite flips. Use a soft edge margin so the fox
+    // doesn't bounce off the screen the instant it touches the wall.
+    var scaledWidth = service.cellWidth * service.scale
+    if (service.positionX <= service.edgeMargin) {
+      service.positionX = service.edgeMargin
+      service.direction = 1
+      service.velocityX = service.walkSpeed
+    } else if (service.positionX >= g.width - scaledWidth - service.edgeMargin) {
+      service.positionX = Math.max(service.edgeMargin, g.width - scaledWidth - service.edgeMargin)
+      service.direction = -1
+      service.velocityX = -service.walkSpeed
+    }
+
+    // Keep velocityY sane; very tall screens shouldn't accumulate.
+    if (service.velocityY > 18) service.velocityY = 18
+
+    // Cross-screen detection. Runs after the position update so a drag
+    // or walk that crosses a monitor edge updates currentScreenIndex
+    // and rescales positionX / positionY into the new screen's frame.
+    if (service._resyncSuppress === 0) service.resyncScreen()
+  }
+
   // Physics + AI tick at ~60Hz. Movement is small enough per step that
   // the fox never tunnels through the floor even at the highest gravity
   // impulse. Disabled while the user is dragging the fox around.
@@ -561,55 +614,7 @@ Item {
     interval: 16
     repeat: true
     running: service.enabled && service.physicsEnabled && !service.isDragging
-    onTriggered: {
-      var g = service.screenGeometry(service.currentScreen())
-      var scaledHeight = service.cellHeight * service.scale
-      var ground = Math.round(g.height - scaledHeight - service.groundMargin)
-
-      // Gravity applies when above the ground; landing softens the
-      // vertical velocity. isJumping stays true until the fox has come
-      // to rest on the ground, then the AI picks the next action.
-      if (service.positionY < ground) {
-        service.velocityY += service.gravity
-      } else if (service.velocityY > 0) {
-        if (service.velocityY > 2.5) {
-          service.velocityY = -service.velocityY * service.bounce
-          service.positionY = ground
-        } else {
-          service.velocityY = 0
-          service.positionY = ground
-          if (service.isJumping) {
-            service.isJumping = false
-            service.pickNextAction()
-          }
-        }
-      }
-
-      service.positionX += service.velocityX
-      service.positionY += service.velocityY
-
-      // Wall bounce reverses the fox's direction. We also re-orient the
-      // facing so the sprite flips. Use a soft edge margin so the fox
-      // doesn't bounce off the screen the instant it touches the wall.
-      var scaledWidth = service.cellWidth * service.scale
-      if (service.positionX <= service.edgeMargin) {
-        service.positionX = service.edgeMargin
-        service.direction = 1
-        service.velocityX = service.walkSpeed
-      } else if (service.positionX >= g.width - scaledWidth - service.edgeMargin) {
-        service.positionX = Math.max(service.edgeMargin, g.width - scaledWidth - service.edgeMargin)
-        service.direction = -1
-        service.velocityX = -service.walkSpeed
-      }
-
-      // Keep velocityY sane; very tall screens shouldn't accumulate.
-      if (service.velocityY > 18) service.velocityY = 18
-
-      // Cross-screen detection. Runs after the position update so a drag
-      // or walk that crosses a monitor edge updates currentScreenIndex
-      // and rescales positionX / positionY into the new screen's frame.
-      if (service._resyncSuppress === 0) service.resyncScreen()
-    }
+    onTriggered: service.physicsStep()
   }
 
   // React to the cursor being near the fox.
