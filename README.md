@@ -63,3 +63,14 @@ omarchy-shell fox-pet jump         # make Folio leap
 omarchy-shell fox-pet reset        # center Folio on the active display
 omarchy-shell fox-pet state        # query state (on/off, state, direction, frame)
 ```
+
+## Frame atlas
+
+Every sprite frame in `assets/spritesheet.webp` has a unique name in `assets/frame-names.json` — use these names (e.g. `sleep-deep-curl`, `turn-quarter-right`) when discussing animation or rendering issues.
+
+A private viewer with every named frame, row metadata, and live cadence previews can be regenerated locally (output is gitignored):
+
+```bash
+python3 tools/build-frame-atlas.py
+xdg-open scratch/frame-atlas.html
+```

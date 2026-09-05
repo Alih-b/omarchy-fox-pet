@@ -47,3 +47,6 @@ nohup.out
 tmp/
 tmp.*
 scratch/
+
+# Command Code session data.
+.commandcode/
