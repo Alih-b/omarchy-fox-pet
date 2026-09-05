@@ -11,18 +11,18 @@
     "cellHeight": 208,
     "rowCount": 11,
     "rows": {
-      "idle":       { "row": 0, "frames": 7, "fps": 5, "sequence": [0, 1, 2, 1], "durations": [3600, 90, 110, 90] },
+      "idle":       { "row": 0, "frames": 7, "fps": 5, "sequence": [0, 1, 2, 1, 0, 1, 2, 1, 0, 4, 0, 5, 0, 6], "durations": [3600, 90, 110, 90, 3600, 90, 110, 90, 4200, 140, 3800, 120, 4000, 160] },
+      "walk":       { "row": 1, "frames": 8, "fps": 8 },
       "sitRight":   { "row": 1, "frames": 8, "fps": 4 },
       "sitLeft":    { "row": 2, "frames": 8, "fps": 4 },
-      "greet":      { "row": 3, "frames": 4, "fps": 10 },
-      "yawn":       { "row": 4, "frames": 5, "fps": 4 },
-      "sleep":      { "row": 5, "frames": 8, "fps": 5 },
-      "play":       { "row": 6, "frames": 6, "fps": 8 },
-      "think":      { "row": 7, "frames": 6, "fps": 5 },
-      "alert":      { "row": 8, "frames": 6, "fps": 6 },
-      "walk":       { "row": 1, "frames": 8, "fps": 8 },
+      "greet":      { "row": 3, "frames": 4, "fps": 10, "sequence": [0, 1, 2, 1, 3], "durations": [80, 90, 260, 90, 140] },
+      "yawn":       { "row": 4, "frames": 5, "fps": 4, "sequence": [0, 1, 2, 3, 4], "durations": [200, 220, 520, 240, 280] },
+      "sleep":      { "row": 5, "frames": 8, "fps": 5, "sequence": [3, 4, 6, 7, 3, 4, 6, 7, 5], "durations": [900, 800, 1100, 1300, 900, 800, 1100, 1300, 220] },
+      "play":       { "row": 6, "frames": 6, "fps": 8, "sequence": [0, 1, 2, 3, 4, 5], "durations": [100, 120, 130, 250, 200, 150] },
+      "think":      { "row": 7, "frames": 6, "fps": 5, "sequence": [0, 1, 2, 3, 4, 5], "durations": [180, 220, 250, 450, 280, 320] },
+      "alert":      { "row": 8, "frames": 6, "fps": 6, "sequence": [0, 1, 2, 3, 4, 5], "durations": [120, 140, 160, 70, 180, 380] },
       "spin":       { "row": 9, "frames": 8, "fps": 10 },
-      "somersault": { "row": 10, "frames": 8, "fps": 5 }
+      "somersault": { "row": 10, "frames": 8, "fps": 8 }
     }
   }
 }
